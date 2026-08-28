@@ -23,7 +23,9 @@ from nio import (
     RoomKeyEvent,
     RoomCreateError,
     RoomMessageImage,
+    RoomEncryptedImage,
     UploadError,
+    DownloadError,
     RoomInviteError,
     RoomMessageText,
     RoomMessagesError,
@@ -41,8 +43,8 @@ _LOCAL_STORE_PASSPHRASE = "mchat-local-store-passphrase"
 # 无法解密消息的占位文本
 PLACEHOLDER = "🔒 无法解密的消息（缺少密钥）"
 
-# (room_id, event_id, sender_name, sender_id, body, timestamp_ms)
-MessageCallback = Callable[[str, str, str, str, str, int], None]
+# (room_id, event_id, sender_name, sender_id, body, timestamp_ms, image_url)
+MessageCallback = Callable[[str, str, str, str, str, int, "str | None"], None]
 RoomCallback = Callable[[], None]
 StatusCallback = Callable[[str], None]
 KeyCallback = Callable[[str], None]  # (room_id)
@@ -153,6 +155,18 @@ class MatrixService:
                 event.sender,
                 f"🖼️ {event.body}",
                 event.server_timestamp,
+                getattr(event, "url", None),
+            )
+        elif isinstance(event, RoomEncryptedImage):
+            sender_name = room.user_name(event.sender) or event.sender
+            self._emit(
+                room.room_id,
+                event.event_id,
+                sender_name,
+                event.sender,
+                f"🖼️ {event.body}",
+                event.server_timestamp,
+                None,
             )
         elif isinstance(event, MegolmEvent):
             # 解密失败（密钥缺失）的消息，用占位显示，避免消息凭空消失
@@ -165,9 +179,9 @@ class MatrixService:
                 event.server_timestamp,
             )
 
-    def _emit(self, room_id, event_id, sender_name, sender_id, body, ts) -> None:
+    def _emit(self, room_id, event_id, sender_name, sender_id, body, ts, image_url=None) -> None:
         if self.on_message:
-            self.on_message(room_id, event_id, sender_name, sender_id, body, ts)
+            self.on_message(room_id, event_id, sender_name, sender_id, body, ts, image_url)
 
     def _handle_key(self, event) -> None:
         # 收到 Megolm 会话密钥：通知 GUI 刷新对应房间，让占位消息重新解密
@@ -248,7 +262,7 @@ class MatrixService:
         data = path.read_bytes()
         room = self.client.rooms.get(room_id)
         encrypt = bool(room and getattr(room, "encrypted", False))
-        up_resp, _ = await self.client.upload(
+        up_resp, decryption_dict = await self.client.upload(
             io.BytesIO(data), content_type=mimetype, filename=path.name, encrypt=encrypt
         )
         if isinstance(up_resp, UploadError):
@@ -256,15 +270,33 @@ class MatrixService:
         content = {
             "msgtype": "m.image",
             "body": path.name,
-            "url": up_resp.content_uri,
             "info": {"mimetype": mimetype, "size": len(data)},
         }
+        if encrypt and decryption_dict:
+            # 加密媒体：把解密信息（key/iv/hashes）放进 file 字段
+            file_info = dict(decryption_dict)
+            file_info["url"] = up_resp.content_uri
+            content["file"] = file_info
+        else:
+            content["url"] = up_resp.content_uri
         resp = await self.client.room_send(
             room_id, "m.room.message", content, ignore_unverified_devices=True
         )
         if isinstance(resp, RoomSendError):
             raise RuntimeError(f"发送失败（HTTP {resp.status_code}）：{resp.message}")
         return resp.event_id
+
+    async def download_media(self, mxc_url: str):
+        """下载媒体（图片等），返回 bytes；失败返回 None。"""
+        if not self.client:
+            return None
+        try:
+            resp = await self.client.download(mxc_url)
+        except Exception:  # noqa: BLE001
+            return None
+        if isinstance(resp, DownloadError):
+            return None
+        return getattr(resp, "body", None)
 
     @staticmethod
     def _guess_mime(suffix: str) -> str:
@@ -300,6 +332,18 @@ class MatrixService:
                             }
                         )
                         continue
+                    if isinstance(dec, RoomMessageImage):
+                        out.append(
+                            {
+                                "event_id": dec.event_id,
+                                "sender": dec.sender,
+                                "body": f"🖼️ {dec.body}",
+                                "ts": dec.server_timestamp,
+                                "decrypted": True,
+                                "image_url": getattr(dec, "url", None),
+                            }
+                        )
+                        continue
                 except Exception:  # noqa: BLE001
                     pass
                 # 解密失败：保留占位，不丢弃
@@ -320,6 +364,28 @@ class MatrixService:
                         "body": ev.body,
                         "ts": ev.server_timestamp,
                         "decrypted": True,
+                    }
+                )
+            elif isinstance(ev, RoomMessageImage):
+                out.append(
+                    {
+                        "event_id": ev.event_id,
+                        "sender": ev.sender,
+                        "body": f"🖼️ {ev.body}",
+                        "ts": ev.server_timestamp,
+                        "decrypted": True,
+                        "image_url": getattr(ev, "url", None),
+                    }
+                )
+            elif isinstance(ev, RoomEncryptedImage):
+                out.append(
+                    {
+                        "event_id": ev.event_id,
+                        "sender": ev.sender,
+                        "body": f"🖼️ {ev.body}",
+                        "ts": ev.server_timestamp,
+                        "decrypted": True,
+                        "image_url": None,
                     }
                 )
         return list(reversed(out))  # 旧 → 新
