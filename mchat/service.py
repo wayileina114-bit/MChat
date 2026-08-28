@@ -147,13 +147,21 @@ class MatrixService:
             ):
                 self.unread[room.room_id] = self.unread.get(room.room_id, 0) + 1
             sender_name = room.user_name(event.sender) or event.sender
-            self.last_messages[room.room_id] = (sender_name, event.body)
+            body = event.body
+            # 引用回复：显示引用标记
+            try:
+                relates = (event.source or {}).get("content", {}).get("m.relates_to", {})
+                if relates.get("m.in_reply_to", {}).get("event_id"):
+                    body = f"↩ 回复\n{body}"
+            except Exception:  # noqa: BLE001
+                pass
+            self.last_messages[room.room_id] = (sender_name, body)
             self._emit(
                 room.room_id,
                 event.event_id,
                 sender_name,
                 event.sender,
-                event.body,
+                body,
                 event.server_timestamp,
             )
         elif isinstance(event, RoomMessageImage):
@@ -272,17 +280,20 @@ class MatrixService:
         return None
 
     # ---------------- 收发 ----------------
-    async def send_text(self, room_id: str, text: str) -> str:
-        """发送文本消息，返回 event_id。"""
+    async def send_text(self, room_id: str, text: str, reply_to: "str | None" = None) -> str:
+        """发送文本消息，返回 event_id。reply_to 为被引用消息的 event_id。"""
         if not self.client:
             raise RuntimeError("尚未连接")
         # 房间尚未同步到本地时先同步一次，避免 "No such room"
         if room_id not in self.client.rooms:
             await self.client.sync(timeout=3000)
+        content = {"msgtype": "m.text", "body": text}
+        if reply_to:
+            content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         resp = await self.client.room_send(
             room_id=room_id,
             message_type="m.room.message",
-            content={"msgtype": "m.text", "body": text},
+            content=content,
             ignore_unverified_devices=True,
         )
         if isinstance(resp, RoomSendError):
