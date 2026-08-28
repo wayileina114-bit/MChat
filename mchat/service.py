@@ -69,6 +69,7 @@ class MatrixService:
         self.on_mention: Optional[Callable[[str, str, str], None]] = None  # (room_id, sender_name, body)
         self.unread: dict[str, int] = {}
         self.muted_rooms: set = set()
+        self.pinned_rooms: set = set()
         self._session_start_ms: int = 0
         self.last_messages: dict[str, tuple[str, str]] = {}  # room_id -> (sender_name, body)
         self._avatar_url_cache: dict[str, "str | None"] = {}
@@ -262,7 +263,7 @@ class MatrixService:
                     "peer_id": self._peer_id(room),
                 }
             )
-        result.sort(key=lambda r: (r["is_dm"], r["display_name"].lower()))
+        result.sort(key=lambda r: (r["room_id"] not in self.pinned_rooms, r["is_dm"], r["display_name"].lower()))
         return result
 
     def mark_read(self, room_id: str) -> None:
@@ -278,6 +279,17 @@ class MatrixService:
 
     def is_muted(self, room_id: str) -> bool:
         return room_id in self.muted_rooms
+
+    def toggle_pin(self, room_id: str) -> bool:
+        """切换房间置顶，返回是否已置顶。"""
+        if room_id in self.pinned_rooms:
+            self.pinned_rooms.discard(room_id)
+            return False
+        self.pinned_rooms.add(room_id)
+        return True
+
+    def is_pinned(self, room_id: str) -> bool:
+        return room_id in self.pinned_rooms
 
     def invited_room_ids(self) -> list:
         if not self.client:
