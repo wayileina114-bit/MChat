@@ -56,6 +56,7 @@ class MatrixService:
         self.on_key_received: Optional[KeyCallback] = None
         self.unread: dict[str, int] = {}
         self._session_start_ms: int = 0
+        self.last_messages: dict[str, tuple[str, str]] = {}  # room_id -> (sender_name, body)
 
     # ---------------- 客户端与登录 ----------------
     def make_client(self) -> AsyncClient:
@@ -129,10 +130,12 @@ class MatrixService:
                 and event.server_timestamp >= self._session_start_ms
             ):
                 self.unread[room.room_id] = self.unread.get(room.room_id, 0) + 1
+            sender_name = room.user_name(event.sender) or event.sender
+            self.last_messages[room.room_id] = (sender_name, event.body)
             self._emit(
                 room.room_id,
                 event.event_id,
-                room.user_name(event.sender) or event.sender,
+                sender_name,
                 event.sender,
                 event.body,
                 event.server_timestamp,
@@ -181,6 +184,7 @@ class MatrixService:
                     "member_count": room.member_count,
                     "topic": getattr(room, "topic", "") or "",
                     "unread": self.unread.get(room_id, 0),
+                    "last_message": self.last_messages.get(room_id),
                 }
             )
         result.sort(key=lambda r: (r["is_dm"], r["display_name"].lower()))
