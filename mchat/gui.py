@@ -12,7 +12,7 @@ import threading
 from datetime import datetime, timedelta
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QPixmap, QImage
+from PySide6.QtGui import QPixmap, QImage, QPainter, QBrush
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -155,14 +155,14 @@ class MessageWidget(QWidget):
         lay.setContentsMargins(12, 6, 12, 6)
         lay.setSpacing(10)
 
-        avatar = QLabel(sender_name[:1].upper() if sender_name else "?")
-        avatar.setFixedSize(40, 40)
-        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        avatar.setStyleSheet(
+        self.avatar = QLabel(sender_name[:1].upper() if sender_name else "?")
+        self.avatar.setFixedSize(40, 40)
+        self.avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.avatar.setStyleSheet(
             f"background: {name_color(sender_id)}; color: white;"
             f"border-radius: 20px; font-size: 16px; font-weight: bold;"
         )
-        lay.addWidget(avatar, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignTop)
 
         col = QVBoxLayout()
         col.setSpacing(2)
@@ -223,6 +223,25 @@ class MessageWidget(QWidget):
         label.setFixedSize(scaled.size())
         label.setStyleSheet("")
         label.setToolTip("点击查看原图")
+
+    def set_avatar(self, data: bytes):
+        if not data:
+            return
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(data):
+            return
+        size = 40
+        pixmap = pixmap.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+        result = QPixmap(size, size)
+        result.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(result)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QBrush(pixmap))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(0, 0, size, size)
+        painter.end()
+        self.avatar.setPixmap(result)
+        self.avatar.setStyleSheet("")
 
     def _open_image(self):
         if not self._image_data:
@@ -626,6 +645,8 @@ class MainWindow(QWidget):
         self.msg_list.setItemWidget(item, widget)
         if image_url:
             asyncio.create_task(self._load_image(widget, image_url))
+        if sender_id:
+            asyncio.create_task(self._load_avatar(widget, sender_id))
         while self.msg_list.count() > 500:
             self.msg_list.takeItem(0)
         self.msg_list.scrollToBottom()
@@ -634,6 +655,11 @@ class MainWindow(QWidget):
         data = await self.service.download_media(image_url)
         if data:
             widget.set_image(data)
+
+    async def _load_avatar(self, widget, sender_id):
+        data = await self.service.get_avatar_data(sender_id)
+        if data:
+            widget.set_avatar(data)
 
     @staticmethod
     def _date_key(ts_ms: int) -> str:
