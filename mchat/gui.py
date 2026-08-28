@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -255,6 +255,7 @@ class MainWindow(QWidget):
         self.service = service
         self.current_room_id = ""
         self._seen_events: set = set()
+        self._last_msg_date: str | None = None
         self._started = False
 
         self.setWindowTitle(f"{__app_name__} v{__version__}")
@@ -443,6 +444,7 @@ class MainWindow(QWidget):
     async def _load_room(self, room_id):
         self.msg_list.clear()
         self._seen_events.clear()
+        self._last_msg_date = None
         self.service.mark_read(room_id)
         self._refresh_rooms()
         # 更新标题
@@ -474,6 +476,10 @@ class MainWindow(QWidget):
             return
         if event_id:
             self._seen_events.add(event_id)
+        day = self._date_key(ts_ms)
+        if day != self._last_msg_date:
+            self._add_date_separator(day)
+            self._last_msg_date = day
         name = self._display_name(sender_id)
         item = QListWidgetItem()
         item.setSizeHint(QSize(0, 60))
@@ -484,6 +490,30 @@ class MainWindow(QWidget):
         while self.msg_list.count() > 500:
             self.msg_list.takeItem(0)
         self.msg_list.scrollToBottom()
+
+    @staticmethod
+    def _date_key(ts_ms: int) -> str:
+        try:
+            dt = datetime.fromtimestamp(ts_ms / 1000)
+            today = datetime.now().date()
+            if dt.date() == today:
+                return "今天"
+            if dt.date() == today - timedelta(days=1):
+                return "昨天"
+            return dt.strftime("%Y-%m-%d")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _add_date_separator(self, day: str):
+        if not day:
+            return
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(0, 28))
+        self.msg_list.addItem(item)
+        lbl = QLabel(day)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-size: 11px; background: transparent;")
+        self.msg_list.setItemWidget(item, lbl)
 
     def _display_name(self, sender_id):
         # 在房间成员里找显示名
