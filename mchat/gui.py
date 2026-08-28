@@ -326,6 +326,10 @@ class MainWindow(QWidget):
         btn_row.addWidget(self.add_btn)
         btn_row.addWidget(self.join_btn)
         side_lay.addLayout(btn_row)
+        self.logout_btn = QPushButton("登出")
+        self.logout_btn.setStyleSheet(self._btn_style())
+        self.logout_btn.clicked.connect(self._logout)
+        side_lay.addWidget(self.logout_btn)
         root.addWidget(sidebar)
 
         # 聊天区
@@ -667,6 +671,13 @@ class MainWindow(QWidget):
     def _on_download_failed(self, msg):
         self.chat_sub.setText("下载失败")
         QMessageBox.warning(self, "下载失败", msg)
+
+    def _logout(self):
+        if QMessageBox.question(self, "登出", "确定要登出吗？本地凭证将被清除。") == QMessageBox.StandardButton.Yes:
+            async def do_logout():
+                await self.service.logout()
+                QApplication.quit()
+            asyncio.create_task(do_logout())
 
     def closeEvent(self, e):
         if self.service.client:
