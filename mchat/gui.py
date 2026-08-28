@@ -649,6 +649,8 @@ class MainWindow(QWidget):
             name = r["display_name"]
             unread = r.get("unread", 0)
             unread_txt = f"  ({unread})" if unread else ""
+            if self.service.is_muted(r["room_id"]):
+                name = f"🔕 {name}"
             lm = r.get("last_message")
             if lm:
                 sender, preview = lm
@@ -693,10 +695,18 @@ class MainWindow(QWidget):
             return
         room_id = item.data(Qt.ItemDataRole.UserRole)
         menu = QMenu(self)
+        muted = self.service.is_muted(room_id)
+        act_mute = menu.addAction("取消静音" if muted else "静音房间")
         act_leave = menu.addAction("离开房间")
         chosen = menu.exec(widget.viewport().mapToGlobal(pos))
-        if chosen == act_leave:
+        if chosen == act_mute:
+            self._toggle_mute(room_id)
+        elif chosen == act_leave:
             self._leave_room(room_id)
+
+    def _toggle_mute(self, room_id):
+        muted = self.service.toggle_mute(room_id)
+        self._refresh_rooms()
 
     def _leave_room(self, room_id):
         if QMessageBox.question(self, "离开房间", "确定要离开这个房间吗？") == QMessageBox.StandardButton.Yes:
@@ -765,6 +775,7 @@ class MainWindow(QWidget):
                 and sender_id != self.service.client.user_id
                 and ts_ms >= self.service._session_start_ms
                 and body != "🔒 无法解密的消息（缺少密钥）"
+                and not self.service.is_muted(room_id)
             ):
                 room_name = self._room_name(room_id)
                 self._notify_room = room_id
