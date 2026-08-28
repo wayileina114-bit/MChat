@@ -563,7 +563,12 @@ class MainWindow(QWidget):
         self.font_big_btn.setStyleSheet(self._btn_style())
         self.font_big_btn.clicked.connect(lambda: self._adjust_font(1))
         self.theme_btn.clicked.connect(self._toggle_theme)
+        self.fav_btn = QPushButton("⭐")
+        self.fav_btn.setToolTip("收藏消息")
+        self.fav_btn.setStyleSheet(self._btn_style())
+        self.fav_btn.clicked.connect(self._show_favorites)
         btn_row2.addWidget(self.theme_btn)
+        btn_row2.addWidget(self.fav_btn)
         btn_row2.addWidget(self.font_small_btn)
         btn_row2.addWidget(self.font_big_btn)
         side_lay.addLayout(btn_row2)
@@ -1009,6 +1014,7 @@ class MainWindow(QWidget):
         menu = QMenu(self)
         act_copy = menu.addAction("复制消息")
         act_reply = menu.addAction("回复")
+        act_fav = menu.addAction("取消收藏" if self.service.is_favorite(event_id) else "收藏消息")
         is_own = bool(sender_id and self.service.client and sender_id == self.service.client.user_id)
         is_text = not body.startswith("🖼️") and body != "🔒 无法解密的消息（缺少密钥）"
         act_edit = None
@@ -1024,6 +1030,8 @@ class MainWindow(QWidget):
             QApplication.clipboard().setText(f"[{sender_name}] {body}")
         elif chosen == act_reply:
             self._set_reply(event_id, sender_id, body)
+        elif chosen == act_fav:
+            self._toggle_favorite(event_id, sender_id, body)
         elif act_edit and chosen == act_edit:
             self._edit_message(event_id, body)
         elif act_redact and chosen == act_redact:
@@ -1040,6 +1048,27 @@ class MainWindow(QWidget):
     def _cancel_reply(self):
         self._reply_to = None
         self._reply_label.hide()
+
+    def _toggle_favorite(self, event_id, sender_id, body):
+        name = self._display_name(sender_id) if sender_id else ""
+        self.service.toggle_favorite(event_id, self.current_room_id, body, name)
+
+    def _show_favorites(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("⭐ 收藏消息")
+        dlg.setMinimumSize(420, 400)
+        lay = QVBoxLayout(dlg)
+        lst = QListWidget()
+        for event_id, fav in self.service.favorites.items():
+            lst.addItem(f"[{fav['sender_name']}] {fav['body'][:60]}")
+        if not self.service.favorites:
+            lst.addItem("（还没有收藏的消息）")
+        lay.addWidget(lst)
+        clear_btn = QPushButton("清空收藏")
+        clear_btn.setStyleSheet(self._btn_style())
+        clear_btn.clicked.connect(lambda: (self.service.favorites.clear(), lst.clear(), lst.addItem("（还没有收藏的消息）")))
+        lay.addWidget(clear_btn)
+        dlg.exec()
 
     def _edit_message(self, event_id, old_text):
         text, ok = QInputDialog.getText(self, "编辑消息", "新内容：", text=old_text)
