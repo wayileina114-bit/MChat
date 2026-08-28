@@ -56,7 +56,8 @@ C_ACCENT = "#5865f2"
 C_ONLINE = "#3ba55d"
 C_HOVER = "#3c3f45"
 
-QSS = f"""
+def build_qss():
+    return f"""
 * {{
     font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
     font-size: 13px;
@@ -140,6 +141,31 @@ def fmt_time(ts_ms: int) -> str:
         return dt.strftime("%m-%d %H:%M")
     except Exception:  # noqa: BLE001
         return ""
+
+
+def apply_theme(theme: str) -> None:
+    """切换深色/浅色主题，更新全局颜色变量。"""
+    global C_DARKEST, C_SIDEBAR, C_BG, C_INPUT, C_TEXT, C_TEXT_MUTED, C_ACCENT, C_ONLINE, C_HOVER
+    if theme == "light":
+        C_DARKEST = "#e3e5e8"
+        C_SIDEBAR = "#f2f3f5"
+        C_BG = "#ffffff"
+        C_INPUT = "#e3e5e8"
+        C_TEXT = "#313338"
+        C_TEXT_MUTED = "#6d6f78"
+        C_ACCENT = "#5865f2"
+        C_ONLINE = "#3ba55d"
+        C_HOVER = "#ebedef"
+    else:
+        C_DARKEST = "#202225"
+        C_SIDEBAR = "#2f3136"
+        C_BG = "#36393f"
+        C_INPUT = "#40444b"
+        C_TEXT = "#dcddde"
+        C_TEXT_MUTED = "#8e9297"
+        C_ACCENT = "#5865f2"
+        C_ONLINE = "#3ba55d"
+        C_HOVER = "#3c3f45"
 
 
 # --------------------------------------------------------------------------
@@ -387,6 +413,7 @@ class MainWindow(QWidget):
         super().__init__()
         self.service = service
         self.current_room_id = ""
+        self._theme = "dark"
         self._reply_to = None
         self._seen_events: set = set()
         self._last_msg_date: str | None = None
@@ -496,6 +523,11 @@ class MainWindow(QWidget):
         self.logout_btn.setStyleSheet(self._btn_style())
         self.logout_btn.clicked.connect(self._logout)
         side_lay.addWidget(self.logout_btn)
+        self.theme_btn = QPushButton("🌓")
+        self.theme_btn.setToolTip("切换深色/浅色主题")
+        self.theme_btn.setStyleSheet(self._btn_style())
+        self.theme_btn.clicked.connect(self._toggle_theme)
+        side_lay.addWidget(self.theme_btn)
         root.addWidget(sidebar)
 
         # 聊天区
@@ -1352,6 +1384,13 @@ class MainWindow(QWidget):
         self.chat_sub.setText("下载失败")
         QMessageBox.warning(self, "下载失败", msg)
 
+    def _toggle_theme(self):
+        self._theme = "light" if getattr(self, "_theme", "dark") != "light" else "dark"
+        apply_theme(self._theme)
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(build_qss())
+
     def _logout(self):
         if QMessageBox.question(self, "登出", "确定要登出吗？本地凭证将被清除。") == QMessageBox.StandardButton.Yes:
             async def do_logout():
@@ -1371,7 +1410,7 @@ class MainWindow(QWidget):
 def run() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(__app_name__)
-    app.setStyleSheet(QSS)
+    app.setStyleSheet(build_qss())
 
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
