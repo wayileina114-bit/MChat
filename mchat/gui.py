@@ -375,6 +375,7 @@ class MainWindow(QWidget):
         self._last_msg_date: str | None = None
         self._messages: list = []
         self._pending_widgets: dict = {}
+        self._sent_widgets: dict = {}
         self._history_end_token: "str | None" = None
         self._loading_older = False
         self._started = False
@@ -386,6 +387,7 @@ class MainWindow(QWidget):
         service.on_room_update = self._refresh_rooms
         service.on_status = self._on_status
         service.on_key_received = self._on_key_received
+        service.on_receipt = self._on_receipt
 
         self._build_ui()
 
@@ -647,6 +649,9 @@ class MainWindow(QWidget):
                 self._append_message(
                     m["event_id"], m["sender"], m["body"], m["ts"], m["decrypted"], m.get("image_url")
                 )
+            # 发送已读标记：告诉对端已读到最新消息
+            if msgs and msgs[-1].get("event_id"):
+                asyncio.create_task(self.service.send_read_marker(room_id, msgs[-1]["event_id"]))
         except Exception:  # noqa: BLE001
             pass
         self.msg_list.scrollToBottom()
@@ -698,6 +703,8 @@ class MainWindow(QWidget):
         is_own = bool(self.service.client and sender_id == self.service.client.user_id)
         widget = MessageWidget(name, sender_id, body, ts_ms, is_placeholder=not decrypted, image_url=image_url, is_own=is_own)
         self.msg_list.setItemWidget(item, widget)
+        if is_own and event_id:
+            self._sent_widgets[event_id] = widget
         if image_url:
             asyncio.create_task(self._load_image(widget, image_url))
         if sender_id:
@@ -853,6 +860,11 @@ class MainWindow(QWidget):
     def _on_input_changed(self):
         has_text = bool(self.input.toPlainText().strip())
         self.send_btn.setEnabled(has_text and bool(self.current_room_id))
+
+    def _on_receipt(self, event_id, user_id):
+        widget = self._sent_widgets.get(event_id)
+        if widget and getattr(widget, "status_label", None):
+            widget.set_status("已读")
 
     def _on_status(self, text):
         if "中断" in text or "重试" in text:
