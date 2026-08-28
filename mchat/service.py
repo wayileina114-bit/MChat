@@ -29,6 +29,7 @@ from nio import (
     RoomRedactError,
     RoomInviteError,
     ProfileGetAvatarError,
+    ReceiptEvent,
     RoomMessageText,
     RoomMessagesError,
     RoomSendError,
@@ -62,6 +63,7 @@ class MatrixService:
         self.on_room_update: Optional[RoomCallback] = None
         self.on_status: Optional[StatusCallback] = None
         self.on_key_received: Optional[KeyCallback] = None
+        self.on_receipt: Optional[Callable[[str, str], None]] = None  # (event_id, user_id)
         self.unread: dict[str, int] = {}
         self._session_start_ms: int = 0
         self.last_messages: dict[str, tuple[str, str]] = {}  # room_id -> (sender_name, body)
@@ -112,6 +114,7 @@ class MatrixService:
         client.add_event_callback(self._handle_event, (RoomMessageText, MegolmEvent))
         client.add_event_callback(self._handle_invite, InviteMemberEvent)
         client.add_to_device_callback(self._handle_key, (RoomKeyEvent, ForwardedRoomKeyEvent))
+        client.add_ephemeral_callback(self._handle_receipt, ReceiptEvent)
 
         # 首次同步，加载房间与成员状态
         self._session_start_ms = int(time.time() * 1000)
@@ -186,6 +189,14 @@ class MatrixService:
     def _emit(self, room_id, event_id, sender_name, sender_id, body, ts, image_url=None) -> None:  # image_url: dict(media info)
         if self.on_message:
             self.on_message(room_id, event_id, sender_name, sender_id, body, ts, image_url)
+
+    def _handle_receipt(self, room, event) -> None:
+        # 对端已读回执：m.read 表示对方读到了某条消息
+        if not self.on_receipt or not self.client:
+            return
+        for r in getattr(event, "receipts", []):
+            if getattr(r, "receipt_type", "") == "m.read" and getattr(r, "user_id", "") != self.client.user_id:
+                self.on_receipt(r.event_id, r.user_id)
 
     def _handle_key(self, event) -> None:
         # 收到 Megolm 会话密钥：通知 GUI 刷新对应房间，让占位消息重新解密
@@ -506,6 +517,15 @@ class MatrixService:
         resp = await self.client.room_redact(room_id, event_id)
         if isinstance(resp, RoomRedactError):
             raise RuntimeError(f"撤回失败：{resp.message}")
+
+    async def send_read_marker(self, room_id: str, event_id: str) -> None:
+        """发送已读标记（m.read），让对端知道你已读到该消息。"""
+        if not self.client:
+            return
+        try:
+            await self.client.room_read_markers(room_id, event_id, event_id)
+        except Exception:  # noqa: BLE001
+            pass
 
     async def edit_message(self, room_id: str, event_id: str, new_text: str) -> None:
         """编辑自己发送的消息（Matrix m.replace）。"""
