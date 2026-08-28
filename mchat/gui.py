@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 import sys
+import tempfile
+import threading
 from datetime import datetime
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
@@ -30,7 +34,7 @@ import qasync
 from . import __app_name__, __version__
 from .config import account, load_config, save_config
 from .service import MatrixService
-from .updater import ReleaseInfo, check_update_async, is_newer
+from .updater import ReleaseInfo, check_update_async, download_asset, is_newer
 
 # --------------------------------------------------------------------------
 # 配色（Discord 风格）
@@ -539,19 +543,70 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "发送失败", str(exc))
 
     def _on_update_found(self, info):
-        if info and is_newer(info.tag_name, __version__):
-            self.chat_sub.setText(
-                f"有新版本 {info.tag_name} 可用，点击前往下载"
-            )
-            self.chat_sub.setStyleSheet(f"color: #f0b232; font-size: 12px;")
-            if QMessageBox.question(
-                self,
-                "发现新版本",
-                f"当前版本 {__version__}，最新版本 {info.tag_name}。\n\n"
-                f"{info.body[:200]}\n\n是否打开下载页面？",
-            ) == QMessageBox.StandardButton.Yes:
-                import webbrowser
-                webbrowser.open(info.html_url)
+        if not info or not is_newer(info.tag_name, __version__):
+            return
+        self.chat_sub.setText(f"有新版本 {info.tag_name} 可用")
+        self.chat_sub.setStyleSheet("color: #f0b232; font-size: 12px;")
+
+        setup_asset = self._find_setup_asset(info)
+        box = QMessageBox(self)
+        box.setWindowTitle("发现新版本")
+        box.setText(
+            f"当前版本 {__version__}，最新版本 {info.tag_name}。\n\n{info.body[:200]}"
+        )
+        dl_btn = None
+        if setup_asset:
+            dl_btn = box.addButton("下载安装包", QMessageBox.ButtonRole.AcceptRole)
+            open_btn = box.addButton("打开下载页", QMessageBox.ButtonRole.ActionRole)
+        else:
+            open_btn = box.addButton("打开下载页", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if dl_btn is not None and clicked == dl_btn:
+            self._download_update(setup_asset)
+        elif clicked == open_btn:
+            import webbrowser
+            webbrowser.open(info.html_url)
+
+    @staticmethod
+    def _find_setup_asset(info):
+        for asset in info.assets:
+            name = (asset.get("name") or "").lower()
+            if name.endswith(".exe") and "setup" in name:
+                return asset
+        return None
+
+    def _download_update(self, asset):
+        url = asset.get("browser_download_url")
+        if not url:
+            return
+        name = asset.get("name") or "MChat-Setup.exe"
+        dest = os.path.join(tempfile.gettempdir(), name)
+        self.chat_sub.setText(f"正在下载 {name} ……")
+
+        def worker():
+            try:
+                download_asset(url, dest)
+                QTimer.singleShot(0, lambda: self._on_download_done(dest))
+            except Exception as exc:  # noqa: BLE001
+                QTimer.singleShot(0, lambda: self._on_download_failed(str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_download_done(self, dest):
+        self.chat_sub.setText("新版本已下载完成")
+        if QMessageBox.question(
+            self,
+            "下载完成",
+            f"安装包已下载到：\n{dest}\n\n是否立即运行安装程序？",
+        ) == QMessageBox.StandardButton.Yes:
+            subprocess.Popen([dest])
+
+    def _on_download_failed(self, msg):
+        self.chat_sub.setText("下载失败")
+        QMessageBox.warning(self, "下载失败", msg)
 
     def _show_about(self):
         QMessageBox.information(
