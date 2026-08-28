@@ -228,6 +228,7 @@ class MatrixService:
                     "topic": getattr(room, "topic", "") or "",
                     "unread": self.unread.get(room_id, 0),
                     "last_message": self.last_messages.get(room_id),
+                    "peer_id": self._peer_id(room),
                 }
             )
         result.sort(key=lambda r: (r["is_dm"], r["display_name"].lower()))
@@ -247,6 +248,13 @@ class MatrixService:
                 if uid != self.client.user_id:
                     return room.user_name(uid) or uid
         return room.display_name or room.name or room.room_id
+
+    def _peer_id(self, room) -> "str | None":
+        if room.member_count == 2 and self.client:
+            for uid in room.users:
+                if uid != self.client.user_id:
+                    return uid
+        return None
 
     # ---------------- 收发 ----------------
     async def send_text(self, room_id: str, text: str) -> str:
