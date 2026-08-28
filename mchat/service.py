@@ -26,6 +26,7 @@ from nio import (
     RoomEncryptedImage,
     UploadError,
     DownloadError,
+    RoomRedactError,
     RoomInviteError,
     RoomMessageText,
     RoomMessagesError,
@@ -474,6 +475,12 @@ class MatrixService:
     async def leave_room(self, room_id: str) -> None:
         await self.client.room_leave(room_id)
         self._notify_room_update()
+
+    async def redact(self, room_id: str, event_id: str) -> None:
+        """撤回（删除）自己发送的消息。"""
+        resp = await self.client.room_redact(room_id, event_id)
+        if isinstance(resp, RoomRedactError):
+            raise RuntimeError(f"撤回失败：{resp.message}")
 
     async def logout(self) -> None:
         """登出：撤销服务器 token，清除本地凭证。"""
