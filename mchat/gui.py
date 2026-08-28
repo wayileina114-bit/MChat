@@ -357,6 +357,9 @@ class MainWindow(QWidget):
         self.current_room_id = ""
         self._seen_events: set = set()
         self._last_msg_date: str | None = None
+        self._messages: list = []
+        self._history_end_token: "str | None" = None
+        self._loading_older = False
         self._started = False
 
         self.setWindowTitle(f"{__app_name__} v{__version__}")
@@ -408,6 +411,11 @@ class MainWindow(QWidget):
         side_lay.addWidget(self.user_sub)
 
         side_lay.addSpacing(8)
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("搜索房间……")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.textChanged.connect(self._refresh_rooms)
+        side_lay.addWidget(self.search_box)
         group_lbl = QLabel("群聊")
         group_lbl.setObjectName("sectionLabel")
         side_lay.addWidget(group_lbl)
@@ -478,6 +486,7 @@ class MainWindow(QWidget):
         self.msg_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.msg_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.msg_list.customContextMenuRequested.connect(self._show_msg_context_menu)
+        self.msg_list.verticalScrollBar().valueChanged.connect(self._on_scroll)
         chat_lay.addWidget(self.msg_list, 1)
 
         input_bar = QFrame()
@@ -550,7 +559,10 @@ class MainWindow(QWidget):
         rooms = self.service.rooms()
         self.group_list.clear()
         self.dm_list.clear()
+        keyword = self.search_box.text().strip().lower() if hasattr(self, "search_box") else ""
         for r in rooms:
+            if keyword and keyword not in r["display_name"].lower():
+                continue
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, r["room_id"])
             item.setSizeHint(QSize(0, 40))
@@ -586,6 +598,7 @@ class MainWindow(QWidget):
         self.msg_list.clear()
         self._seen_events.clear()
         self._last_msg_date = None
+        self._messages = []
         self.service.mark_read(room_id)
         self._refresh_rooms()
         # 更新标题
@@ -599,8 +612,9 @@ class MainWindow(QWidget):
         self.invite_btn.setEnabled(True)
         self.members_btn.setEnabled(True)
         self.image_btn.setEnabled(True)
+        self._history_end_token = None
         try:
-            msgs = await self.service.history(room_id, limit=100)
+            msgs, self._history_end_token = await self.service.history(room_id, limit=100)
             for m in msgs:
                 self._append_message(
                     m["event_id"], m["sender"], m["body"], m["ts"], m["decrypted"], m.get("image_url")
@@ -651,14 +665,59 @@ class MainWindow(QWidget):
             asyncio.create_task(self._load_image(widget, image_url))
         if sender_id:
             asyncio.create_task(self._load_avatar(widget, sender_id))
+        self._messages.append({
+            "event_id": event_id, "sender": sender_id, "body": body,
+            "ts": ts_ms, "decrypted": decrypted, "image_url": image_url,
+        })
         while self.msg_list.count() > 500:
             self.msg_list.takeItem(0)
+            if self._messages:
+                self._messages.pop(0)
         self.msg_list.scrollToBottom()
 
     async def _load_image(self, widget, image_url):
         data = await self.service.download_media(image_url)
         if data:
             widget.set_image(data)
+
+    def _on_scroll(self, value):
+        if value == 0 and not self._loading_older and self._history_end_token and self.current_room_id:
+            asyncio.create_task(self._load_older())
+
+    async def _load_older(self):
+        self._loading_older = True
+        scrollbar = self.msg_list.verticalScrollBar()
+        old_max = scrollbar.maximum()
+        old_value = scrollbar.value()
+        try:
+            msgs, end_token = await self.service.history(
+                self.current_room_id, limit=50, from_token=self._history_end_token
+            )
+            if end_token:
+                self._history_end_token = end_token
+            if not msgs:
+                return
+            new_msgs = []
+            for m in msgs:
+                new_msgs.append({
+                    "event_id": m["event_id"], "sender": m["sender"], "body": m["body"],
+                    "ts": m["ts"], "decrypted": m["decrypted"], "image_url": m.get("image_url"),
+                })
+            self._messages = new_msgs + self._messages
+            self._rebuild_messages()
+            new_max = scrollbar.maximum()
+            scrollbar.setValue(new_max - (old_max - old_value))
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            self._loading_older = False
+
+    def _rebuild_messages(self):
+        self.msg_list.clear()
+        self._seen_events.clear()
+        self._last_msg_date = None
+        for m in self._messages:
+            self._append_message(m["event_id"], m["sender"], m["body"], m["ts"], m["decrypted"], m.get("image_url"))
 
     async def _load_avatar(self, widget, sender_id):
         data = await self.service.get_avatar_data(sender_id)
