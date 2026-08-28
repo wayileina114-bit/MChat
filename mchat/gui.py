@@ -160,6 +160,10 @@ class MessageWidget(QWidget):
         name_lbl.setStyleSheet(f"color: {name_color(sender_id)}; font-weight: bold; font-size: 14px;")
         time_lbl = QLabel(fmt_time(ts_ms))
         time_lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-size: 11px;")
+        try:
+            time_lbl.setToolTip(datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception:  # noqa: BLE001
+            pass
         head.addWidget(name_lbl)
         head.addWidget(time_lbl)
         head.addStretch(1)
@@ -402,6 +406,7 @@ class MainWindow(QWidget):
         self.input.setFixedHeight(64)
         self.input.setEnabled(False)
         self.input.submitted.connect(self._send)
+        self.input.textChanged.connect(self._on_input_changed)
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("sendBtn")
         self.send_btn.clicked.connect(self._send)
@@ -576,6 +581,10 @@ class MainWindow(QWidget):
             if room:
                 return room.user_name(sender_id) or sender_id
         return sender_id
+
+    def _on_input_changed(self):
+        has_text = bool(self.input.toPlainText().strip())
+        self.send_btn.setEnabled(has_text and bool(self.current_room_id))
 
     def _on_status(self, text):
         self.user_sub.setText(f"已连接 · {text}")
