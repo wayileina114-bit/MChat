@@ -117,13 +117,32 @@ _URL_RE = re.compile(r"(https?://[^\s<]+)")
 _MENTION_RE = re.compile(r"(@[A-Za-z0-9_.:-]+)")
 
 
+_CODE_BLOCK_RE = re.compile("\x60\x60\x60([A-Za-z0-9_]*)" + chr(10) + "?(.*?)\x60\x60\x60", re.DOTALL)
+
+
 def linkify(text: str) -> str:
-    """把文本里的 URL 转成可点击链接、@提及高亮显示（先做 HTML 转义防注入）。"""
+    """把文本里的 URL 转成可点击链接、@提及高亮、代码块 等宽显示。"""
     escaped = html_mod.escape(text)
-    escaped = _URL_RE.sub(r'<a href="\1">\1</a>', escaped)
-    escaped = _MENTION_RE.sub(
-        r'<span style="color: #f0b232;">\1</span>', escaped
-    )
+    placeholders = []
+
+    def _save_code(m):
+        code = m.group(2)
+        idx = len(placeholders)
+        placeholders.append(code)
+        return f"__MC_CODE_{idx}__"
+
+    escaped = _CODE_BLOCK_RE.sub(_save_code, escaped)
+    escaped = _URL_RE.sub(lambda m: f'<a href="{m.group(1)}">{m.group(1)}</a>', escaped)
+    escaped = _MENTION_RE.sub(lambda m: f'<span style="color: #f0b232;">{m.group(1)}</span>', escaped)
+    for i, code in enumerate(placeholders):
+        escaped = escaped.replace(
+            f"__MC_CODE_{i}__",
+            '<pre style="background:#2b2d31;color:#dcddde;padding:8px;'
+            'border-radius:6px;font-family:Consolas,monospace;'
+            'font-size:12px;white-space:pre-wrap;">'
+            + code
+            + "</pre>",
+        )
     return escaped
 
 
