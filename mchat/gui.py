@@ -406,6 +406,7 @@ class MainWindow(QWidget):
         service.on_key_received = self._on_key_received
         service.on_receipt = self._on_receipt
         service.on_typing = self._on_typing
+        service.on_mention = self._on_mention
 
         self._build_ui()
 
@@ -565,6 +566,12 @@ class MainWindow(QWidget):
         input_lay.setContentsMargins(16, 4, 16, 12)
         input_lay.setSpacing(10)
         input_bar_lay.addLayout(input_lay)
+        self.emoji_btn = QPushButton("😊")
+        self.emoji_btn.setToolTip("表情")
+        self.emoji_btn.setStyleSheet(self._btn_style())
+        self.emoji_btn.setFixedSize(44, 44)
+        self.emoji_btn.clicked.connect(self._show_emoji_menu)
+        input_lay.addWidget(self.emoji_btn, 0, Qt.AlignmentFlag.AlignBottom)
         self.image_btn = QPushButton("🖼️")
         self.image_btn.setToolTip("发送图片")
         self.image_btn.setStyleSheet(self._btn_style())
@@ -969,6 +976,15 @@ class MainWindow(QWidget):
         if widget and getattr(widget, "status_label", None):
             widget.set_status("已读")
 
+    def _on_mention(self, room_id, sender_name, body):
+        self.user_sub.setText(f"🔔 @提及 · {sender_name}：{body[:30]}")
+        self.user_sub.setStyleSheet("color: #f0b232; font-size: 11px;")
+        try:
+            self.tray.showMessage(f"@{sender_name} 提及了你", body, QSystemTrayIcon.MessageIcon.Warning, 5000)
+            QApplication.beep()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _on_typing(self, room_id, user_ids):
         if room_id != self.current_room_id or not user_ids:
             return
@@ -1086,6 +1102,21 @@ class MainWindow(QWidget):
         path = os.path.join(tempfile.gettempdir(), f"mchat_paste_{datetime.now().strftime('%H%M%S%f')}.png")
         qimage.save(path)
         asyncio.create_task(self._do_send_image(path))
+
+    _EMOJIS = ["😀", "😂", "😊", "❤️", "👍", "😮", "😢", "😡", "🔥", "🎉", "✅", "❌", "🤔", "😴", "🙏", "💯", "🎂", "🚀", "✨", "👀"]
+
+    def _show_emoji_menu(self):
+        menu = QMenu(self)
+        for emoji in self._EMOJIS:
+            menu.addAction(emoji)
+        chosen = menu.exec(self.emoji_btn.mapToGlobal(self.emoji_btn.rect().bottomLeft()))
+        if chosen:
+            self._insert_emoji(chosen.text())
+
+    def _insert_emoji(self, emoji):
+        cursor = self.input.textCursor()
+        cursor.insertText(emoji)
+        self.input.setFocus()
 
     def _send_image(self):
         if not self.current_room_id:
