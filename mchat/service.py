@@ -507,6 +507,20 @@ class MatrixService:
         if isinstance(resp, RoomRedactError):
             raise RuntimeError(f"撤回失败：{resp.message}")
 
+    async def edit_message(self, room_id: str, event_id: str, new_text: str) -> None:
+        """编辑自己发送的消息（Matrix m.replace）。"""
+        content = {
+            "msgtype": "m.text",
+            "body": f" * {new_text}",
+            "m.new_content": {"msgtype": "m.text", "body": new_text},
+            "m.relates_to": {"rel_type": "m.replace", "event_id": event_id},
+        }
+        resp = await self.client.room_send(
+            room_id, "m.room.message", content, ignore_unverified_devices=True
+        )
+        if isinstance(resp, RoomSendError):
+            raise RuntimeError(f"编辑失败：{resp.message}")
+
     async def logout(self) -> None:
         """登出：撤销服务器 token，清除本地凭证。"""
         cfg = load_config()
