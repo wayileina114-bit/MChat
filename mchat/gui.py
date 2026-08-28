@@ -114,10 +114,17 @@ _NAME_COLORS = [
 _URL_RE = re.compile(r"(https?://[^\s<]+)")
 
 
+_MENTION_RE = re.compile(r"(@[A-Za-z0-9_.:-]+)")
+
+
 def linkify(text: str) -> str:
-    """把文本里的 URL 转成可点击的 <a> 链接（先做 HTML 转义防注入）。"""
+    """把文本里的 URL 转成可点击链接、@提及高亮显示（先做 HTML 转义防注入）。"""
     escaped = html_mod.escape(text)
-    return _URL_RE.sub(r'<a href="\1">\1</a>', escaped)
+    escaped = _URL_RE.sub(r'<a href="\1">\1</a>', escaped)
+    escaped = _MENTION_RE.sub(
+        r'<span style="color: #f0b232;">\1</span>', escaped
+    )
+    return escaped
 
 
 def name_color(name: str) -> str:
@@ -457,8 +464,14 @@ class MainWindow(QWidget):
         self.tray.setToolTip(f"{__app_name__} v{__version__}")
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.messageClicked.connect(self._on_notify_clicked)
-        self.tray.show()
+        self._minimize_to_tray = True
         self._notify_room = None
+        self._tray_menu = QMenu(self)
+        self._tray_menu.addAction("显示", self._show_from_tray)
+        self._tray_menu.addSeparator()
+        self._tray_menu.addAction("退出", self._quit_app)
+        self.tray.setContextMenu(self._tray_menu)
+        self.tray.show()
 
         self.updater = UpdateChecker()
         self.updater.found.connect(self._on_update_found)
@@ -1446,7 +1459,30 @@ class MainWindow(QWidget):
             self._settings.setValue("window_geometry", self.saveGeometry())
         if self.service.client:
             asyncio.create_task(self.service.close())
+        if getattr(self, "_minimize_to_tray", True) and self.tray.isVisible():
+            e.ignore()
+            self.hide()
+            try:
+                self.tray.showMessage(
+                    __app_name__,
+                    "已最小化到托盘，双击图标恢复窗口",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2000,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return
         super().closeEvent(e)
+
+    def _show_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_app(self):
+        self._minimize_to_tray = False
+        self.close()
+        QApplication.quit()
 
 
 # --------------------------------------------------------------------------
