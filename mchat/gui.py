@@ -345,6 +345,16 @@ class MessageInput(QPlainTextEdit):
     submitted = Signal()
     image_pasted = Signal(object)  # QImage
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setMinimumHeight(40)
+        self.textChanged.connect(self._auto_resize)
+
+    def _auto_resize(self):
+        doc = self.document()
+        height = int(doc.size().height()) + 24
+        self.setFixedHeight(min(max(height, 40), 130))
+
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
             e.modifiers() & Qt.KeyboardModifier.ShiftModifier
@@ -537,7 +547,6 @@ class MainWindow(QWidget):
         self.input = MessageInput()
         self.input.setObjectName("msgInput")
         self.input.setPlaceholderText("发消息…… Enter 发送，Shift+Enter 换行")
-        self.input.setFixedHeight(64)
         self.input.setEnabled(False)
         self.input.submitted.connect(self._send)
         self.input.textChanged.connect(self._on_input_changed)
@@ -659,6 +668,7 @@ class MainWindow(QWidget):
                 self._messages = []
                 self.chat_title.setText("选择一个房间开始聊天")
                 self.chat_sub.setText("")
+                self.setWindowTitle(f"{__app_name__} v{__version__}")
             self._refresh_rooms()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "离开失败", str(exc))
@@ -675,6 +685,7 @@ class MainWindow(QWidget):
             if r["room_id"] == room_id:
                 self.chat_title.setText(r["display_name"])
                 self.chat_sub.setText(f"{r['member_count']} 名成员" + (" · 私聊" if r["is_dm"] else " · 群聊"))
+                self.setWindowTitle(f"{__app_name__} v{__version__} · {r['display_name']}")
                 break
         self.input.setEnabled(True)
         self.send_btn.setEnabled(True)
