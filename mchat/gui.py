@@ -418,6 +418,8 @@ class MainWindow(QWidget):
         self.msg_list.setObjectName("msgList")
         self.msg_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.msg_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.msg_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.msg_list.customContextMenuRequested.connect(self._show_msg_context_menu)
         chat_lay.addWidget(self.msg_list, 1)
 
         input_bar = QFrame()
@@ -575,6 +577,7 @@ class MainWindow(QWidget):
         name = self._display_name(sender_id)
         item = QListWidgetItem()
         item.setSizeHint(QSize(0, 60))
+        item.setData(Qt.ItemDataRole.UserRole, body)
         self.msg_list.addItem(item)
         widget = MessageWidget(name, sender_id, body, ts_ms, is_placeholder=not decrypted, image_url=image_url)
         self.msg_list.setItemWidget(item, widget)
@@ -612,6 +615,19 @@ class MainWindow(QWidget):
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-size: 11px; background: transparent;")
         self.msg_list.setItemWidget(item, lbl)
+
+    def _show_msg_context_menu(self, pos):
+        item = self.msg_list.itemAt(pos)
+        if not item:
+            return
+        body = item.data(Qt.ItemDataRole.UserRole)
+        if not body:
+            return
+        menu = QMenu(self)
+        act_copy = menu.addAction("复制消息")
+        chosen = menu.exec(self.msg_list.viewport().mapToGlobal(pos))
+        if chosen == act_copy:
+            QApplication.clipboard().setText(body)
 
     def _display_name(self, sender_id):
         # 在房间成员里找显示名
