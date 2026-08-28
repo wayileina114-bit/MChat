@@ -623,6 +623,12 @@ class MainWindow(QWidget):
         self.search_btn.clicked.connect(self._search_message)
         self.search_btn.setEnabled(False)
         header_lay.addWidget(self.search_btn)
+        self.export_btn = QPushButton("⬇")
+        self.export_btn.setToolTip("导出聊天记录")
+        self.export_btn.setStyleSheet(self._btn_style())
+        self.export_btn.clicked.connect(self._export_chat)
+        self.export_btn.setEnabled(False)
+        header_lay.addWidget(self.export_btn)
         self.invite_btn = QPushButton("邀请好友")
         self.invite_btn.setStyleSheet(self._btn_style())
         self.invite_btn.clicked.connect(self._invite)
@@ -851,6 +857,7 @@ class MainWindow(QWidget):
         self.invite_btn.setEnabled(True)
         self.members_btn.setEnabled(True)
         self.search_btn.setEnabled(True)
+        self.export_btn.setEnabled(True)
         self.image_btn.setEnabled(True)
         self._history_end_token = None
         try:
@@ -1407,6 +1414,29 @@ class MainWindow(QWidget):
             lst.addItem(f"{name}{suffix}\n  {uid}")
         lay.addWidget(lst)
         dlg.exec()
+
+    def _export_chat(self):
+        if not self.current_room_id or not self._messages:
+            QMessageBox.information(self, "导出", "当前没有可导出的消息")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出聊天记录", "mchat_export.txt", "文本文件 (*.txt)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                for m in self._messages:
+                    name = self._display_name(m["sender"])
+                    try:
+                        ts = datetime.fromtimestamp(m["ts"] / 1000).strftime("%Y-%m-%d %H:%M")
+                    except Exception:  # noqa: BLE001
+                        ts = ""
+                    body = m["body"].replace("\n", " ").strip()
+                    f.write(f"[{ts}] {name}: {body}\n")
+            QMessageBox.information(self, "导出完成", f"已导出到：\n{path}")
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "导出失败", str(exc))
 
     def _search_message(self):
         if not self.current_room_id:
