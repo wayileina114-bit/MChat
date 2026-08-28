@@ -12,7 +12,7 @@ import threading
 from datetime import datetime, timedelta
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QPixmap, QImage, QPainter, QBrush
+from PySide6.QtGui import QPixmap, QImage, QPainter, QBrush, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -567,6 +567,10 @@ class MainWindow(QWidget):
                 item.setText(f"{icon} {name}{unread_txt}\n  {sender}: {preview}")
             else:
                 item.setText(f"{icon} {name}{unread_txt}")
+            if unread:
+                f = QFont()
+                f.setBold(True)
+                item.setFont(f)
             if r["room_id"] == self.current_room_id:
                 item.setSelected(True)
             target = self.dm_list if r["is_dm"] else self.group_list
@@ -696,14 +700,35 @@ class MainWindow(QWidget):
         sender_id = item.data(Qt.ItemDataRole.UserRole + 2)
         menu = QMenu(self)
         act_copy = menu.addAction("复制消息")
+        is_own = bool(sender_id and self.service.client and sender_id == self.service.client.user_id)
+        is_text = not body.startswith("🖼️") and body != "🔒 无法解密的消息（缺少密钥）"
+        act_edit = None
         act_redact = None
-        if sender_id and self.service.client and sender_id == self.service.client.user_id:
+        if is_own and is_text:
+            act_edit = menu.addAction("编辑消息")
+            act_redact = menu.addAction("撤回消息")
+        elif is_own:
             act_redact = menu.addAction("撤回消息")
         chosen = menu.exec(self.msg_list.viewport().mapToGlobal(pos))
         if chosen == act_copy:
             QApplication.clipboard().setText(body)
+        elif act_edit and chosen == act_edit:
+            self._edit_message(event_id, body)
         elif act_redact and chosen == act_redact:
             asyncio.create_task(self._do_redact(event_id))
+
+    def _edit_message(self, event_id, old_text):
+        text, ok = QInputDialog.getText(self, "编辑消息", "新内容：", text=old_text)
+        if not ok or not text.strip():
+            return
+        asyncio.create_task(self._do_edit(event_id, text.strip()))
+
+    async def _do_edit(self, event_id, text):
+        try:
+            await self.service.edit_message(self.current_room_id, event_id, text)
+            await self._load_room(self.current_room_id)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "编辑失败", str(exc))
 
     async def _do_redact(self, event_id):
         try:
