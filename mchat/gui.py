@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import html as html_mod
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QStyle,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -101,6 +105,15 @@ _NAME_COLORS = [
 ]
 
 
+_URL_RE = re.compile(r"(https?://[^\s<]+)")
+
+
+def linkify(text: str) -> str:
+    """把文本里的 URL 转成可点击的 <a> 链接（先做 HTML 转义防注入）。"""
+    escaped = html_mod.escape(text)
+    return _URL_RE.sub(r'<a href="\1">\1</a>', escaped)
+
+
 def name_color(name: str) -> str:
     h = 0
     for ch in name:
@@ -152,12 +165,18 @@ class MessageWidget(QWidget):
         head.addStretch(1)
         col.addLayout(head)
 
-        body_lbl = QLabel(body)
+        body_lbl = QLabel()
         body_lbl.setWordWrap(True)
-        body_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body_lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.LinksAccessibleByMouse
+        )
+        body_lbl.setOpenExternalLinks(True)
         if is_placeholder:
+            body_lbl.setText(body)
             body_lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-style: italic; font-size: 14px;")
         else:
+            body_lbl.setText(linkify(body))
+            body_lbl.setTextFormat(Qt.TextFormat.RichText)
             body_lbl.setStyleSheet(f"color: {C_TEXT}; font-size: 14px;")
         col.addWidget(body_lbl)
 
@@ -267,6 +286,13 @@ class MainWindow(QWidget):
         service.on_key_received = self._on_key_received
 
         self._build_ui()
+
+        # 系统托盘：用于新消息通知
+        self.tray = QSystemTrayIcon(self)
+        self.tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
+        self.tray.setToolTip(f"{__app_name__} v{__version__}")
+        self.tray.activated.connect(self._on_tray_activated)
+        self.tray.show()
 
         self.updater = UpdateChecker()
         self.updater.found.connect(self._on_update_found)
@@ -470,6 +496,21 @@ class MainWindow(QWidget):
     def _on_message(self, room_id, event_id, sender_name, sender_id, body, ts_ms):
         if room_id == self.current_room_id:
             self._append_message(event_id, sender_id, body, ts_ms, True)
+        else:
+            # 非当前房间的新消息：系统托盘通知（过滤自己发 + 历史同步）
+            if (
+                self.service.client
+                and sender_id != self.service.client.user_id
+                and ts_ms >= self.service._session_start_ms
+                and body != "🔒 无法解密的消息（缺少密钥）"
+            ):
+                room_name = self._room_name(room_id)
+                self.tray.showMessage(
+                    f"{sender_name} · {room_name}",
+                    body,
+                    QSystemTrayIcon.MessageIcon.Information,
+                    5000,
+                )
 
     def _append_message(self, event_id, sender_id, body, ts_ms, decrypted=True):
         if event_id and event_id in self._seen_events:
@@ -525,6 +566,19 @@ class MainWindow(QWidget):
 
     def _on_status(self, text):
         self.user_sub.setText(f"已连接 · {text}")
+
+    def _room_name(self, room_id: str) -> str:
+        for r in self.service.rooms():
+            if r["room_id"] == room_id:
+                return r["display_name"]
+        return room_id
+
+    def _on_tray_activated(self, reason):
+        # 单击/双击托盘图标时恢复窗口
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
 
     def _on_key_received(self, room_id):
         # 密钥到达，刷新当前房间（防抖，避免批量密钥频繁重载）
