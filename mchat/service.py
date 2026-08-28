@@ -31,8 +31,11 @@ logging.getLogger("nio").setLevel(logging.CRITICAL)
 
 _LOCAL_STORE_PASSPHRASE = "mchat-local-store-passphrase"
 
-# (room_id, sender_name, sender_id, body, timestamp_ms)
-MessageCallback = Callable[[str, str, str, str, int], None]
+# 无法解密消息的占位文本
+PLACEHOLDER = "🔒 无法解密的消息（缺少密钥）"
+
+# (room_id, event_id, sender_name, sender_id, body, timestamp_ms)
+MessageCallback = Callable[[str, str, str, str, str, int], None]
 RoomCallback = Callable[[], None]
 StatusCallback = Callable[[str], None]
 
@@ -54,7 +57,7 @@ class MatrixService:
             encryption_enabled=True,
             store=SqliteStore,
             store_name="nio.db",
-            store_sync_tokens=False,
+            store_sync_tokens=True,
             pickle_key=_LOCAL_STORE_PASSPHRASE,
         )
         store_path = ROOT / cfg["store_dir"]
@@ -107,16 +110,28 @@ class MatrixService:
 
     def _handle_event(self, room, event) -> None:
         if isinstance(event, RoomMessageText):
-            sender_name = room.user_name(event.sender) or event.sender
-            if self.on_message:
-                self.on_message(
-                    room.room_id,
-                    sender_name,
-                    event.sender,
-                    event.body,
-                    event.server_timestamp,
-                )
-        # MegolmEvent（尚未解密）忽略，解密成功后 nio 会以 RoomMessageText 重新回调
+            self._emit(
+                room.room_id,
+                event.event_id,
+                room.user_name(event.sender) or event.sender,
+                event.sender,
+                event.body,
+                event.server_timestamp,
+            )
+        elif isinstance(event, MegolmEvent):
+            # 解密失败（密钥缺失）的消息，用占位显示，避免消息凭空消失
+            self._emit(
+                room.room_id,
+                event.event_id,
+                event.sender,
+                event.sender,
+                PLACEHOLDER,
+                event.server_timestamp,
+            )
+
+    def _emit(self, room_id, event_id, sender_name, sender_id, body, ts) -> None:
+        if self.on_message:
+            self.on_message(room_id, event_id, sender_name, sender_id, body, ts)
 
     async def _handle_invite(self, room, event) -> None:
         try:
@@ -129,7 +144,6 @@ class MatrixService:
 
     # ---------------- 房间列表 ----------------
     def rooms(self) -> list:
-        """返回已加入的房间列表，供 GUI 展示。"""
         if not self.client:
             return []
         result = []
@@ -152,7 +166,6 @@ class MatrixService:
         return list(self.client.invited_rooms.keys())
 
     def _room_display(self, room) -> str:
-        # 私聊（2 人）显示对方名字；群聊显示房间名
         if room.member_count == 2:
             for uid in room.users:
                 if uid != self.client.user_id:
@@ -160,7 +173,8 @@ class MatrixService:
         return room.display_name or room.name or room.room_id
 
     # ---------------- 收发 ----------------
-    async def send_text(self, room_id: str, text: str) -> None:
+    async def send_text(self, room_id: str, text: str) -> str:
+        """发送文本消息，返回 event_id。"""
         if not self.client:
             raise RuntimeError("尚未连接")
         resp = await self.client.room_send(
@@ -171,8 +185,10 @@ class MatrixService:
         )
         if isinstance(resp, RoomSendError):
             raise RuntimeError(f"发送失败（HTTP {resp.status_code}）：{resp.message}")
+        return resp.event_id
 
-    async def history(self, room_id: str, limit: int = 50):
+    async def history(self, room_id: str, limit: int = 100):
+        """返回房间历史（旧→新），解密失败的消息用占位文本代替，不丢弃。"""
         if not self.client:
             return []
         resp = await self.client.room_messages(room_id, start=None, limit=limit)
@@ -184,12 +200,39 @@ class MatrixService:
                 try:
                     dec = await self.client.decrypt_event(ev)
                     if isinstance(dec, RoomMessageText):
-                        out.append(dec)
+                        out.append(
+                            {
+                                "event_id": dec.event_id,
+                                "sender": dec.sender,
+                                "body": dec.body,
+                                "ts": dec.server_timestamp,
+                                "decrypted": True,
+                            }
+                        )
+                        continue
                 except Exception:  # noqa: BLE001
                     pass
+                # 解密失败：保留占位，不丢弃
+                out.append(
+                    {
+                        "event_id": ev.event_id,
+                        "sender": ev.sender,
+                        "body": PLACEHOLDER,
+                        "ts": ev.server_timestamp,
+                        "decrypted": False,
+                    }
+                )
             elif isinstance(ev, RoomMessageText):
-                out.append(ev)
-        return out
+                out.append(
+                    {
+                        "event_id": ev.event_id,
+                        "sender": ev.sender,
+                        "body": ev.body,
+                        "ts": ev.server_timestamp,
+                        "decrypted": True,
+                    }
+                )
+        return list(reversed(out))  # 旧 → 新
 
     # ---------------- 房间操作 ----------------
     async def create_group_room(self, name: str, invite_ids: list | None = None) -> str:
