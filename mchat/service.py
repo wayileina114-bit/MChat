@@ -70,6 +70,7 @@ class MatrixService:
         self.unread: dict[str, int] = {}
         self.muted_rooms: set = set()
         self.pinned_rooms: set = set()
+        self.favorites: dict = {}  # event_id -> {room_id, body, sender_name}
         self._session_start_ms: int = 0
         self.last_messages: dict[str, tuple[str, str]] = {}  # room_id -> (sender_name, body)
         self._avatar_url_cache: dict[str, "str | None"] = {}
@@ -290,6 +291,21 @@ class MatrixService:
 
     def is_pinned(self, room_id: str) -> bool:
         return room_id in self.pinned_rooms
+
+    def toggle_favorite(self, event_id: str, room_id: str, body: str, sender_name: str) -> bool:
+        """切换收藏，返回是否已收藏。"""
+        if event_id in self.favorites:
+            del self.favorites[event_id]
+            return False
+        self.favorites[event_id] = {
+            "room_id": room_id,
+            "body": body,
+            "sender_name": sender_name,
+        }
+        return True
+
+    def is_favorite(self, event_id: str) -> bool:
+        return event_id in self.favorites
 
     def invited_room_ids(self) -> list:
         if not self.client:
