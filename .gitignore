@@ -1,0 +1,19 @@
+# 本地密钥库和账号凭据，不要提交到版本库
+store_a/
+store_b/
+config.json
+__pycache__/
+*.pyc
+
+# PyInstaller 构建产物
+build/
+dist/
+*.manifest
+
+# 虚拟环境
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
