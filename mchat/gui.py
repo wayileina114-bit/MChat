@@ -407,6 +407,11 @@ class MainWindow(QWidget):
         header_text.addWidget(self.chat_title)
         header_text.addWidget(self.chat_sub)
         header_lay.addLayout(header_text, 1)
+        self.members_btn = QPushButton("成员")
+        self.members_btn.setStyleSheet(self._btn_style())
+        self.members_btn.clicked.connect(self._show_members)
+        self.members_btn.setEnabled(False)
+        header_lay.addWidget(self.members_btn)
         self.invite_btn = QPushButton("邀请好友")
         self.invite_btn.setStyleSheet(self._btn_style())
         self.invite_btn.clicked.connect(self._invite)
@@ -534,6 +539,7 @@ class MainWindow(QWidget):
         self.input.setEnabled(True)
         self.send_btn.setEnabled(True)
         self.invite_btn.setEnabled(True)
+        self.members_btn.setEnabled(True)
         self.image_btn.setEnabled(True)
         try:
             msgs = await self.service.history(room_id, limit=100)
@@ -578,6 +584,8 @@ class MainWindow(QWidget):
         item = QListWidgetItem()
         item.setSizeHint(QSize(0, 60))
         item.setData(Qt.ItemDataRole.UserRole, body)
+        item.setData(Qt.ItemDataRole.UserRole + 1, event_id)
+        item.setData(Qt.ItemDataRole.UserRole + 2, sender_id)
         self.msg_list.addItem(item)
         widget = MessageWidget(name, sender_id, body, ts_ms, is_placeholder=not decrypted, image_url=image_url)
         self.msg_list.setItemWidget(item, widget)
@@ -623,11 +631,25 @@ class MainWindow(QWidget):
         body = item.data(Qt.ItemDataRole.UserRole)
         if not body:
             return
+        event_id = item.data(Qt.ItemDataRole.UserRole + 1)
+        sender_id = item.data(Qt.ItemDataRole.UserRole + 2)
         menu = QMenu(self)
         act_copy = menu.addAction("复制消息")
+        act_redact = None
+        if sender_id and self.service.client and sender_id == self.service.client.user_id:
+            act_redact = menu.addAction("撤回消息")
         chosen = menu.exec(self.msg_list.viewport().mapToGlobal(pos))
         if chosen == act_copy:
             QApplication.clipboard().setText(body)
+        elif act_redact and chosen == act_redact:
+            asyncio.create_task(self._do_redact(event_id))
+
+    async def _do_redact(self, event_id):
+        try:
+            await self.service.redact(self.current_room_id, event_id)
+            await self._load_room(self.current_room_id)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "撤回失败", str(exc))
 
     def _display_name(self, sender_id):
         # 在房间成员里找显示名
@@ -775,6 +797,26 @@ class MainWindow(QWidget):
             await self._load_room(rid)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "加入失败", str(exc))
+
+    def _show_members(self):
+        if not self.current_room_id or not self.service.client:
+            return
+        room = self.service.client.rooms.get(self.current_room_id)
+        if not room:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("房间成员")
+        dlg.setMinimumSize(340, 420)
+        lay = QVBoxLayout(dlg)
+        lst = QListWidget()
+        users = getattr(room, "users", {})
+        for uid in users:
+            name = room.user_name(uid) or uid
+            is_self = uid == self.service.client.user_id
+            suffix = "（我）" if is_self else ""
+            lst.addItem(f"{name}{suffix}\n  {uid}")
+        lay.addWidget(lst)
+        dlg.exec()
 
     def _invite(self):
         if not self.current_room_id:
