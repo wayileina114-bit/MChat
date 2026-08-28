@@ -388,6 +388,7 @@ class MainWindow(QWidget):
         service.on_status = self._on_status
         service.on_key_received = self._on_key_received
         service.on_receipt = self._on_receipt
+        service.on_typing = self._on_typing
 
         self._build_ui()
 
@@ -441,6 +442,8 @@ class MainWindow(QWidget):
         self.group_list = QListWidget()
         self.group_list.setObjectName("roomList")
         self.group_list.itemClicked.connect(self._on_room_clicked)
+        self.group_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.group_list.customContextMenuRequested.connect(self._show_room_context_menu)
         side_lay.addWidget(self.group_list, 1)
 
         dm_lbl = QLabel("私聊")
@@ -449,6 +452,8 @@ class MainWindow(QWidget):
         self.dm_list = QListWidget()
         self.dm_list.setObjectName("roomList")
         self.dm_list.itemClicked.connect(self._on_room_clicked)
+        self.dm_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.dm_list.customContextMenuRequested.connect(self._show_room_context_menu)
         side_lay.addWidget(self.dm_list, 1)
 
         # 底部按钮
@@ -626,6 +631,37 @@ class MainWindow(QWidget):
         if room_id != self.current_room_id:
             self.current_room_id = room_id
             asyncio.create_task(self._load_room(room_id))
+
+    def _show_room_context_menu(self, pos):
+        widget = self.sender()
+        if widget not in (self.group_list, self.dm_list):
+            return
+        item = widget.itemAt(pos)
+        if not item:
+            return
+        room_id = item.data(Qt.ItemDataRole.UserRole)
+        menu = QMenu(self)
+        act_leave = menu.addAction("离开房间")
+        chosen = menu.exec(widget.viewport().mapToGlobal(pos))
+        if chosen == act_leave:
+            self._leave_room(room_id)
+
+    def _leave_room(self, room_id):
+        if QMessageBox.question(self, "离开房间", "确定要离开这个房间吗？") == QMessageBox.StandardButton.Yes:
+            asyncio.create_task(self._do_leave_room(room_id))
+
+    async def _do_leave_room(self, room_id):
+        try:
+            await self.service.leave_room(room_id)
+            if self.current_room_id == room_id:
+                self.current_room_id = ""
+                self.msg_list.clear()
+                self._messages = []
+                self.chat_title.setText("选择一个房间开始聊天")
+                self.chat_sub.setText("")
+            self._refresh_rooms()
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "离开失败", str(exc))
 
     async def _load_room(self, room_id):
         self.msg_list.clear()
@@ -868,6 +904,21 @@ class MainWindow(QWidget):
         widget = self._sent_widgets.get(event_id)
         if widget and getattr(widget, "status_label", None):
             widget.set_status("已读")
+
+    def _on_typing(self, room_id, user_ids):
+        if room_id != self.current_room_id or not user_ids:
+            return
+        name = self._display_name(user_ids[0])
+        self.chat_sub.setText(f"{name} 正在输入……")
+        QTimer.singleShot(1500, self._restore_chat_sub)
+
+    def _restore_chat_sub(self):
+        if not self.current_room_id:
+            return
+        for r in self.service.rooms():
+            if r["room_id"] == self.current_room_id:
+                self.chat_sub.setText(f"{r['member_count']} 名成员" + (" · 私聊" if r["is_dm"] else " · 群聊"))
+                break
 
     def _on_status(self, text):
         if "中断" in text or "重试" in text:
