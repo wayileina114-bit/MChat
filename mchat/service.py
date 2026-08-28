@@ -16,6 +16,8 @@ from nio import (
     JoinError,
     LoginError,
     MegolmEvent,
+    ForwardedRoomKeyEvent,
+    RoomKeyEvent,
     RoomCreateError,
     RoomInviteError,
     RoomMessageText,
@@ -38,6 +40,7 @@ PLACEHOLDER = "🔒 无法解密的消息（缺少密钥）"
 MessageCallback = Callable[[str, str, str, str, str, int], None]
 RoomCallback = Callable[[], None]
 StatusCallback = Callable[[str], None]
+KeyCallback = Callable[[str], None]  # (room_id)
 
 
 class MatrixService:
@@ -49,6 +52,7 @@ class MatrixService:
         self.on_message: Optional[MessageCallback] = None
         self.on_room_update: Optional[RoomCallback] = None
         self.on_status: Optional[StatusCallback] = None
+        self.on_key_received: Optional[KeyCallback] = None
 
     # ---------------- 客户端与登录 ----------------
     def make_client(self) -> AsyncClient:
@@ -93,6 +97,7 @@ class MatrixService:
 
         client.add_event_callback(self._handle_event, (RoomMessageText, MegolmEvent))
         client.add_event_callback(self._handle_invite, InviteMemberEvent)
+        client.add_to_device_callback(self._handle_key, (RoomKeyEvent, ForwardedRoomKeyEvent))
 
         # 首次同步，加载房间与成员状态
         await client.sync(timeout=3000)
@@ -132,6 +137,12 @@ class MatrixService:
     def _emit(self, room_id, event_id, sender_name, sender_id, body, ts) -> None:
         if self.on_message:
             self.on_message(room_id, event_id, sender_name, sender_id, body, ts)
+
+    def _handle_key(self, event) -> None:
+        # 收到 Megolm 会话密钥：通知 GUI 刷新对应房间，让占位消息重新解密
+        room_id = getattr(event, "room_id", "")
+        if room_id and self.on_key_received:
+            self.on_key_received(room_id)
 
     async def _handle_invite(self, room, event) -> None:
         try:
