@@ -1,7 +1,7 @@
-"""Matrix 通信服务：登录、收发消息、拉取历史（基于 matrix-nio，端到端加密）。
+"""Matrix 通信服务：单账号登录、房间管理、收发消息（matrix-nio，端到端加密）。
 
-本模块不依赖 Qt，只依赖 asyncio 和 matrix-nio，方便单独测试。
-GUI 通过回调（on_message / on_status）接收事件。
+不依赖 Qt，只依赖 asyncio 和 matrix-nio。
+GUI 通过回调（on_message / on_room_update / on_status）接收事件。
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from nio import (
     LoginError,
     MegolmEvent,
     RoomCreateError,
+    RoomInviteError,
     RoomMessageText,
     RoomMessagesError,
     RoomSendError,
@@ -24,31 +25,31 @@ from nio import (
 )
 from nio.store import SqliteStore
 
-from .config import ROOT, account, load_config, save_config
+from .config import ROOT, load_config, save_config
 
 logging.getLogger("nio").setLevel(logging.CRITICAL)
 
 _LOCAL_STORE_PASSPHRASE = "mchat-local-store-passphrase"
 
-# (key, label, sender_name, sender_id, body, timestamp_ms)
-MessageCallback = Callable[[str, str, str, str, str, int], None]
-StatusCallback = Callable[[str, str], None]
+# (room_id, sender_name, sender_id, body, timestamp_ms)
+MessageCallback = Callable[[str, str, str, str, int], None]
+RoomCallback = Callable[[], None]
+StatusCallback = Callable[[str], None]
 
 
 class MatrixService:
-    """封装两个 Matrix 账号的登录、监听与收发。"""
+    """封装单个 Matrix 账号的登录、房间列表与收发。"""
 
     def __init__(self) -> None:
-        self.clients: dict[str, AsyncClient] = {}
-        self._tasks: list[asyncio.Task] = []
+        self.client: Optional[AsyncClient] = None
+        self._task: Optional[asyncio.Task] = None
         self.on_message: Optional[MessageCallback] = None
+        self.on_room_update: Optional[RoomCallback] = None
         self.on_status: Optional[StatusCallback] = None
-        self.room_id: str = load_config().get("room_id", "")
 
-    # ---- 客户端构建 ----
-    def make_client(self, key: str) -> AsyncClient:
+    # ---------------- 客户端与登录 ----------------
+    def make_client(self) -> AsyncClient:
         cfg = load_config()
-        acct = account(cfg, key)
         config = AsyncClientConfig(
             encryption_enabled=True,
             store=SqliteStore,
@@ -56,112 +57,113 @@ class MatrixService:
             store_sync_tokens=False,
             pickle_key=_LOCAL_STORE_PASSPHRASE,
         )
-        store_path = ROOT / acct["store_dir"]
+        store_path = ROOT / cfg["store_dir"]
         store_path.mkdir(parents=True, exist_ok=True)
         return AsyncClient(
             homeserver=cfg["homeserver"],
-            user=acct["user_id"],
-            device_id=acct["device_id"],
+            user=cfg["user_id"],
+            device_id=cfg["device_id"],
             store_path=str(store_path),
             config=config,
             proxy=cfg.get("proxy") or None,
         )
 
-    # ---- 登录 ----
-    async def login(self, key: str) -> AsyncClient:
+    async def login(self) -> AsyncClient:
         cfg = load_config()
-        acct = account(cfg, key)
-        client = self.make_client(key)
-
-        if acct.get("access_token"):
-            client.restore_login(
-                acct["user_id"], acct["device_id"], acct["access_token"]
-            )
+        client = self.make_client()
+        if cfg.get("access_token"):
+            client.restore_login(cfg["user_id"], cfg["device_id"], cfg["access_token"])
         else:
-            resp = await client.login(
-                password=acct["password"], device_name=acct["device_id"]
-            )
+            resp = await client.login(password=cfg["password"], device_name=cfg["device_id"])
             if isinstance(resp, LoginError):
-                raise RuntimeError(
-                    f"[{acct['label']}] 登录失败（HTTP {resp.status_code}）：{resp.message}"
-                )
-            acct["access_token"] = client.access_token
+                raise RuntimeError(f"登录失败（HTTP {resp.status_code}）：{resp.message}")
+            cfg["access_token"] = client.access_token
             save_config(cfg)
-
         if client.should_upload_keys:
             await client.keys_upload()
-        self.clients[key] = client
-        self._report(key, "已登录")
+        self.client = client
+        self._report("已登录")
         return client
 
-    # ---- 连接并开始后台同步 ----
-    async def connect(self, key: str) -> AsyncClient:
-        client = self.clients.get(key)
-        if client is None:
-            client = await self.login(key)
+    async def connect(self) -> AsyncClient:
+        client = self.client or await self.login()
 
-        # 先同步一次，把房间/成员状态加载到本地（否则立刻发消息会报 No such room）
+        client.add_event_callback(self._handle_event, (RoomMessageText, MegolmEvent))
+        client.add_event_callback(self._handle_invite, InviteMemberEvent)
+
+        # 首次同步，加载房间与成员状态
         await client.sync(timeout=3000)
-
-        label = account(load_config(), key)["label"]
-
-        def on_event(room, event, _key=key, _label=label):
-            self._handle_event(_key, _label, room, event)
-
-        def on_invite(room, event, _client=client, _key=key):
-            asyncio.create_task(self._handle_invite(_client, _key, room, event))
-
-        client.add_event_callback(on_event, (RoomMessageText, MegolmEvent))
-        client.add_event_callback(on_invite, InviteMemberEvent)
-
-        task = asyncio.create_task(self._sync_loop(client, key))
-        self._tasks.append(task)
-        self._report(key, "开始监听")
+        self._task = asyncio.create_task(self._sync_loop(client))
+        self._report("开始监听")
         return client
 
-    async def _sync_loop(self, client: AsyncClient, key: str) -> None:
+    async def _sync_loop(self, client: AsyncClient) -> None:
         try:
             await client.sync_forever(timeout=30_000, loop_sleep_time=500)
         except asyncio.CancelledError:
             pass
         except Exception as exc:  # noqa: BLE001
-            self._report(key, f"同步中断：{exc}")
+            self._report(f"同步中断：{exc}")
 
-    def _handle_event(self, key: str, label: str, room, event) -> None:
+    def _handle_event(self, room, event) -> None:
         if isinstance(event, RoomMessageText):
             sender_name = room.user_name(event.sender) or event.sender
             if self.on_message:
                 self.on_message(
-                    key,
-                    label,
+                    room.room_id,
                     sender_name,
                     event.sender,
                     event.body,
                     event.server_timestamp,
                 )
-        # MegolmEvent（尚未解密）忽略：解密成功后 nio 会再以 RoomMessageText 回调。
+        # MegolmEvent（尚未解密）忽略，解密成功后 nio 会以 RoomMessageText 重新回调
 
-    async def _handle_invite(self, client: AsyncClient, key: str, room, event) -> None:
+    async def _handle_invite(self, room, event) -> None:
         try:
-            if room.room_id in client.invited_rooms:
-                await client.join(room.room_id)
-                self._report(key, f"已接受邀请并加入 {room.room_id}")
+            if self.client and room.room_id in self.client.invited_rooms:
+                await self.client.join(room.room_id)
+                self._report("已接受邀请并加入房间")
+                self._notify_room_update()
         except Exception as exc:  # noqa: BLE001
-            self._report(key, f"加入房间失败：{exc}")
+            self._report(f"加入房间失败：{exc}")
 
-    def _report(self, key: str, text: str) -> None:
-        if self.on_status:
-            self.on_status(key, text)
+    # ---------------- 房间列表 ----------------
+    def rooms(self) -> list:
+        """返回已加入的房间列表，供 GUI 展示。"""
+        if not self.client:
+            return []
+        result = []
+        for room_id, room in self.client.rooms.items():
+            result.append(
+                {
+                    "room_id": room_id,
+                    "display_name": self._room_display(room),
+                    "is_dm": room.member_count == 2,
+                    "member_count": room.member_count,
+                    "topic": getattr(room, "topic", "") or "",
+                }
+            )
+        result.sort(key=lambda r: (r["is_dm"], r["display_name"].lower()))
+        return result
 
-    # ---- 发送 ----
-    async def send_text(self, key: str, text: str) -> None:
-        client = self.clients.get(key)
-        if client is None:
+    def invited_room_ids(self) -> list:
+        if not self.client:
+            return []
+        return list(self.client.invited_rooms.keys())
+
+    def _room_display(self, room) -> str:
+        # 私聊（2 人）显示对方名字；群聊显示房间名
+        if room.member_count == 2:
+            for uid in room.users:
+                if uid != self.client.user_id:
+                    return room.user_name(uid) or uid
+        return room.display_name or room.name or room.room_id
+
+    # ---------------- 收发 ----------------
+    async def send_text(self, room_id: str, text: str) -> None:
+        if not self.client:
             raise RuntimeError("尚未连接")
-        room_id = self.room_id or load_config().get("room_id")
-        if not room_id:
-            raise RuntimeError("还没有房间，请先完成初始化")
-        resp = await client.room_send(
+        resp = await self.client.room_send(
             room_id=room_id,
             message_type="m.room.message",
             content={"msgtype": "m.text", "body": text},
@@ -170,22 +172,17 @@ class MatrixService:
         if isinstance(resp, RoomSendError):
             raise RuntimeError(f"发送失败（HTTP {resp.status_code}）：{resp.message}")
 
-    # ---- 历史消息 ----
-    async def history(self, key: str, limit: int = 50):
-        client = self.clients.get(key)
-        if client is None:
+    async def history(self, room_id: str, limit: int = 50):
+        if not self.client:
             return []
-        room_id = self.room_id or load_config().get("room_id")
-        if not room_id:
-            return []
-        resp = await client.room_messages(room_id, start=None, limit=limit)
+        resp = await self.client.room_messages(room_id, start=None, limit=limit)
         if isinstance(resp, RoomMessagesError):
             return []
         out = []
         for ev in resp.chunk:
             if isinstance(ev, MegolmEvent):
                 try:
-                    dec = await client.decrypt_event(ev)
+                    dec = await self.client.decrypt_event(ev)
                     if isinstance(dec, RoomMessageText):
                         out.append(dec)
                 except Exception:  # noqa: BLE001
@@ -194,64 +191,80 @@ class MatrixService:
                 out.append(ev)
         return out
 
-    # ---- 首次初始化：建加密房间 + 握手 ----
-    async def setup_room(self) -> str:
-        cfg = load_config()
-        room_id = cfg.get("room_id")
-        a = self.clients.get("a") or await self.login("a")
-        b = self.clients.get("b") or await self.login("b")
+    # ---------------- 房间操作 ----------------
+    async def create_group_room(self, name: str, invite_ids: list | None = None) -> str:
+        if not self.client:
+            raise RuntimeError("尚未连接")
+        resp = await self.client.room_create(
+            visibility=RoomVisibility.private,
+            name=name,
+            invite=invite_ids or [],
+            initial_state=[
+                {
+                    "type": "m.room.encryption",
+                    "state_key": "",
+                    "content": {"algorithm": "m.megolm.v1.aes-sha2"},
+                }
+            ],
+        )
+        if isinstance(resp, RoomCreateError):
+            raise RuntimeError(f"创建房间失败：{resp.message}")
+        await self.client.sync(timeout=3000)
+        self._notify_room_update()
+        return resp.room_id
 
-        if not room_id:
-            resp = await a.room_create(
-                visibility=RoomVisibility.private,
-                name=cfg.get("room_name", "MChat 通道"),
-                invite=[b.user_id],
-                initial_state=[
-                    {
-                        "type": "m.room.encryption",
-                        "state_key": "",
-                        "content": {"algorithm": "m.megolm.v1.aes-sha2"},
-                    }
-                ],
-            )
-            if isinstance(resp, RoomCreateError):
-                raise RuntimeError(
-                    f"创建房间失败（HTTP {resp.status_code}）：{resp.message}"
-                )
-            room_id = resp.room_id
-            cfg["room_id"] = room_id
-            save_config(cfg)
+    async def create_dm(self, user_id: str) -> str:
+        if not self.client:
+            raise RuntimeError("尚未连接")
+        resp = await self.client.room_create(
+            visibility=RoomVisibility.private,
+            is_direct=True,
+            invite=[user_id],
+            initial_state=[
+                {
+                    "type": "m.room.encryption",
+                    "state_key": "",
+                    "content": {"algorithm": "m.megolm.v1.aes-sha2"},
+                }
+            ],
+        )
+        if isinstance(resp, RoomCreateError):
+            raise RuntimeError(f"创建私聊失败：{resp.message}")
+        await self.client.sync(timeout=3000)
+        self._notify_room_update()
+        return resp.room_id
 
-        for _ in range(3):
-            await a.sync(timeout=2000)
-            await b.sync(timeout=2000)
+    async def invite(self, room_id: str, user_id: str) -> None:
+        resp = await self.client.room_invite(room_id, user_id)
+        if isinstance(resp, RoomInviteError):
+            raise RuntimeError(f"邀请失败：{resp.message}")
 
-        if room_id not in b.rooms:
-            resp = await b.join(room_id)
-            if isinstance(resp, JoinError):
-                raise RuntimeError(
-                    f"程序B 加入失败（HTTP {resp.status_code}）：{resp.message}"
-                )
-            await a.sync(timeout=2000)
-            await b.sync(timeout=2000)
-
-        await self.send_text("a", "握手：我是程序A")
-        for _ in range(5):
-            await b.sync(timeout=2000)
-        await self.send_text("b", "握手：我是程序B")
-        for _ in range(5):
-            await a.sync(timeout=2000)
-
-        self.room_id = room_id
+    async def join_room(self, room_id: str) -> str:
+        resp = await self.client.join(room_id)
+        if isinstance(resp, JoinError):
+            raise RuntimeError(f"加入失败（HTTP {resp.status_code}）：{resp.message}")
+        await self.client.sync(timeout=3000)
+        self._notify_room_update()
         return room_id
 
-    # ---- 关闭 ----
+    async def leave_room(self, room_id: str) -> None:
+        await self.client.room_leave(room_id)
+        self._notify_room_update()
+
+    # ---------------- 工具 ----------------
+    def _report(self, text: str) -> None:
+        if self.on_status:
+            self.on_status(text)
+
+    def _notify_room_update(self) -> None:
+        if self.on_room_update:
+            self.on_room_update()
+
     async def close(self) -> None:
-        for t in self._tasks:
-            t.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-        for c in self.clients.values():
-            await c.close()
-        self.clients.clear()
-        self._tasks.clear()
+        if self._task:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
+        if self.client:
+            await self.client.close()
+            self.client = None
