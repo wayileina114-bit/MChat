@@ -15,6 +15,7 @@ from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFileDialog,
     QFrame,
     QFormLayout,
     QHBoxLayout,
@@ -400,6 +401,13 @@ class MainWindow(QWidget):
         input_lay = QHBoxLayout(input_bar)
         input_lay.setContentsMargins(16, 12, 16, 12)
         input_lay.setSpacing(10)
+        self.image_btn = QPushButton("🖼️")
+        self.image_btn.setToolTip("发送图片")
+        self.image_btn.setStyleSheet(self._btn_style())
+        self.image_btn.setFixedSize(44, 44)
+        self.image_btn.setEnabled(False)
+        self.image_btn.clicked.connect(self._send_image)
+        input_lay.addWidget(self.image_btn, 0, Qt.AlignmentFlag.AlignBottom)
         self.input = MessageInput()
         self.input.setObjectName("msgInput")
         self.input.setPlaceholderText("发消息…… Enter 发送，Shift+Enter 换行")
@@ -500,6 +508,7 @@ class MainWindow(QWidget):
         self.input.setEnabled(True)
         self.send_btn.setEnabled(True)
         self.invite_btn.setEnabled(True)
+        self.image_btn.setEnabled(True)
         try:
             msgs = await self.service.history(room_id, limit=100)
             for m in msgs:
@@ -625,6 +634,25 @@ class MainWindow(QWidget):
             return
         self.input.clear()
         asyncio.create_task(self._do_send(text))
+
+    def _send_image(self):
+        if not self.current_room_id:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择图片",
+            "",
+            "图片 (*.png *.jpg *.jpeg *.gif *.webp *.bmp)",
+        )
+        if not path:
+            return
+        asyncio.create_task(self._do_send_image(path))
+
+    async def _do_send_image(self, path):
+        try:
+            await self.service.send_image(self.current_room_id, path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "图片发送失败", str(exc))
 
     async def _do_send(self, text):
         try:
