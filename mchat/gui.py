@@ -12,7 +12,7 @@ import threading
 from datetime import datetime, timedelta
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QPixmap, QImage, QPainter, QBrush, QFont
+from PySide6.QtGui import QPixmap, QImage, QPainter, QBrush, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -615,6 +615,9 @@ class MainWindow(QWidget):
                 item.setFont(f)
             if r["room_id"] == self.current_room_id:
                 item.setSelected(True)
+            peer = r.get("peer_id")
+            if peer:
+                asyncio.create_task(self._set_room_avatar(item, peer))
             target = self.dm_list if r["is_dm"] else self.group_list
             target.addItem(item)
 
@@ -873,6 +876,14 @@ class MainWindow(QWidget):
         else:
             self.user_sub.setText(f"🟢 已连接 · {text}")
             self.user_sub.setStyleSheet("color: #3ba55d; font-size: 11px;")
+
+    async def _set_room_avatar(self, item, user_id):
+        data = await self.service.get_avatar_data(user_id)
+        if data:
+            pixmap = QPixmap()
+            if pixmap.loadFromData(data):
+                scaled = pixmap.scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+                item.setIcon(QIcon(scaled))
 
     def _room_name(self, room_id: str) -> str:
         for r in self.service.rooms():
