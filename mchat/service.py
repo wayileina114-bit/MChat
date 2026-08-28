@@ -68,6 +68,7 @@ class MatrixService:
         self.on_typing: Optional[Callable[[str, list], None]] = None  # (room_id, user_ids)
         self.on_mention: Optional[Callable[[str, str, str], None]] = None  # (room_id, sender_name, body)
         self.unread: dict[str, int] = {}
+        self.muted_rooms: set = set()
         self._session_start_ms: int = 0
         self.last_messages: dict[str, tuple[str, str]] = {}  # room_id -> (sender_name, body)
         self._avatar_url_cache: dict[str, "str | None"] = {}
@@ -266,6 +267,17 @@ class MatrixService:
 
     def mark_read(self, room_id: str) -> None:
         self.unread[room_id] = 0
+
+    def toggle_mute(self, room_id: str) -> bool:
+        """切换房间静音，返回是否已静音。"""
+        if room_id in self.muted_rooms:
+            self.muted_rooms.discard(room_id)
+            return False
+        self.muted_rooms.add(room_id)
+        return True
+
+    def is_muted(self, room_id: str) -> bool:
+        return room_id in self.muted_rooms
 
     def invited_room_ids(self) -> list:
         if not self.client:
