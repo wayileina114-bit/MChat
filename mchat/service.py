@@ -30,6 +30,7 @@ from nio import (
     RoomInviteError,
     ProfileGetAvatarError,
     ReceiptEvent,
+    TypingNoticeEvent,
     RoomMessageText,
     RoomMessagesError,
     RoomSendError,
@@ -64,6 +65,7 @@ class MatrixService:
         self.on_status: Optional[StatusCallback] = None
         self.on_key_received: Optional[KeyCallback] = None
         self.on_receipt: Optional[Callable[[str, str], None]] = None  # (event_id, user_id)
+        self.on_typing: Optional[Callable[[str, list], None]] = None  # (room_id, user_ids)
         self.unread: dict[str, int] = {}
         self._session_start_ms: int = 0
         self.last_messages: dict[str, tuple[str, str]] = {}  # room_id -> (sender_name, body)
@@ -115,6 +117,7 @@ class MatrixService:
         client.add_event_callback(self._handle_invite, InviteMemberEvent)
         client.add_to_device_callback(self._handle_key, (RoomKeyEvent, ForwardedRoomKeyEvent))
         client.add_ephemeral_callback(self._handle_receipt, ReceiptEvent)
+        client.add_ephemeral_callback(self._handle_typing, TypingNoticeEvent)
 
         # 首次同步，加载房间与成员状态
         self._session_start_ms = int(time.time() * 1000)
@@ -189,6 +192,18 @@ class MatrixService:
     def _emit(self, room_id, event_id, sender_name, sender_id, body, ts, image_url=None) -> None:  # image_url: dict(media info)
         if self.on_message:
             self.on_message(room_id, event_id, sender_name, sender_id, body, ts, image_url)
+
+    def _handle_typing(self, room, event) -> None:
+        # 对端正在输入提示
+        if not self.on_typing or not self.client:
+            return
+        user_ids = getattr(event, "user_ids", None)
+        if user_ids is None:
+            content = getattr(event, "content", None) or {}
+            user_ids = content.get("user_ids", [])
+        user_ids = [u for u in (user_ids or []) if u != self.client.user_id]
+        if user_ids:
+            self.on_typing(room.room_id, user_ids)
 
     def _handle_receipt(self, room, event) -> None:
         # 对端已读回执：m.read 表示对方读到了某条消息
