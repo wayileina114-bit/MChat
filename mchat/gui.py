@@ -440,6 +440,9 @@ class MainWindow(QWidget):
 
         self.user_sub.setText("已连接 · 端到端加密已启用")
         self._refresh_rooms()
+        if not self.service.rooms():
+            self.chat_title.setText("欢迎使用 MChat")
+            self.chat_sub.setText("还没有房间。点左下角「＋ 新建」创建群聊或私聊，或「加入」加入已有房间")
         self.updater.check()
 
     # ---------------- 房间列表 ----------------
