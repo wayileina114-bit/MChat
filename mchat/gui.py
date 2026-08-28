@@ -506,6 +506,15 @@ class MainWindow(QWidget):
         self.msg_list.verticalScrollBar().valueChanged.connect(self._on_scroll)
         chat_lay.addWidget(self.msg_list, 1)
 
+        self.jump_btn = QPushButton("↓ 跳到最新消息")
+        self.jump_btn.setStyleSheet(
+            f"background: {C_ACCENT}; color: white; border: none; border-radius: 6px; padding: 4px 10px;"
+        )
+        self.jump_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.jump_btn.clicked.connect(self._jump_to_bottom)
+        self.jump_btn.hide()
+        chat_lay.addWidget(self.jump_btn)
+
         input_bar = QFrame()
         input_bar.setObjectName("inputBar")
         input_lay = QHBoxLayout(input_bar)
@@ -710,8 +719,16 @@ class MainWindow(QWidget):
             widget.set_image(data)
 
     def _on_scroll(self, value):
+        scrollbar = self.msg_list.verticalScrollBar()
+        at_bottom = scrollbar.value() >= scrollbar.maximum() - 10
+        if hasattr(self, "jump_btn"):
+            self.jump_btn.setVisible(not at_bottom)
         if value == 0 and not self._loading_older and self._history_end_token and self.current_room_id:
             asyncio.create_task(self._load_older())
+
+    def _jump_to_bottom(self):
+        self.msg_list.scrollToBottom()
+        self.jump_btn.hide()
 
     async def _load_older(self):
         self._loading_older = True
