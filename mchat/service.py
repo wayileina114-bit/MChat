@@ -28,6 +28,7 @@ from nio import (
     DownloadError,
     RoomRedactError,
     RoomInviteError,
+    ProfileGetAvatarError,
     RoomMessageText,
     RoomMessagesError,
     RoomSendError,
@@ -64,6 +65,8 @@ class MatrixService:
         self.unread: dict[str, int] = {}
         self._session_start_ms: int = 0
         self.last_messages: dict[str, tuple[str, str]] = {}  # room_id -> (sender_name, body)
+        self._avatar_url_cache: dict[str, "str | None"] = {}
+        self._avatar_data_cache: dict[str, bytes] = {}
 
     # ---------------- 客户端与登录 ----------------
     def make_client(self) -> AsyncClient:
@@ -310,6 +313,28 @@ class MatrixService:
                 )
             except Exception:  # noqa: BLE001
                 return None
+        return data
+
+    async def get_avatar_data(self, user_id: str):
+        """获取用户头像 bytes（带缓存）；无头像返回 None。"""
+        if user_id in self._avatar_data_cache:
+            return self._avatar_data_cache[user_id]
+        mxc = None
+        if user_id in self._avatar_url_cache:
+            mxc = self._avatar_url_cache[user_id]
+        else:
+            try:
+                resp = await self.client.get_avatar(user_id)
+                if not isinstance(resp, ProfileGetAvatarError):
+                    mxc = getattr(resp, "avatar_url", None)
+            except Exception:  # noqa: BLE001
+                mxc = None
+            self._avatar_url_cache[user_id] = mxc
+        if not mxc:
+            return None
+        data = await self.download_media({"url": mxc})
+        if data:
+            self._avatar_data_cache[user_id] = data
         return data
 
     @staticmethod
