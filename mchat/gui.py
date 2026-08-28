@@ -1,4 +1,4 @@
-"""MChat 图形界面：类 Discord 的暗色桌面应用（PySide6）。"""
+"""MChat 图形界面：类 Discord 的 Matrix 聊天客户端（单账号，与真人通讯）。"""
 from __future__ import annotations
 
 import asyncio
@@ -10,18 +10,18 @@ import threading
 from datetime import datetime
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
-    QButtonGroup,
     QDialog,
     QFrame,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -32,21 +32,21 @@ from PySide6.QtWidgets import (
 import qasync
 
 from . import __app_name__, __version__
-from .config import account, load_config, save_config
+from .config import is_configured, load_config, save_config
 from .service import MatrixService
 from .updater import ReleaseInfo, check_update_async, download_asset, is_newer
 
 # --------------------------------------------------------------------------
 # 配色（Discord 风格）
 # --------------------------------------------------------------------------
-C_DARKEST = "#202225"   # 最左侧账号栏
-C_SIDEBAR = "#2f3136"   # 侧栏
-C_BG = "#36393f"        # 聊天区背景
-C_INPUT = "#40444b"     # 输入框
-C_TEXT = "#dcddde"      # 正文
-C_TEXT_MUTED = "#8e9297"  # 次要文字
-C_ACCENT = "#5865f2"    # 强调色（blurple）
-C_ONLINE = "#3ba55d"    # 在线绿
+C_DARKEST = "#202225"
+C_SIDEBAR = "#2f3136"
+C_BG = "#36393f"
+C_INPUT = "#40444b"
+C_TEXT = "#dcddde"
+C_TEXT_MUTED = "#8e9297"
+C_ACCENT = "#5865f2"
+C_ONLINE = "#3ba55d"
 C_HOVER = "#3c3f45"
 
 QSS = f"""
@@ -56,78 +56,44 @@ QSS = f"""
     color: {C_TEXT};
 }}
 QWidget {{ background: transparent; }}
-QMainWindow, QDialog {{ background: {C_BG}; }}
+QDialog {{ background: {C_BG}; }}
 
-/* 最左侧账号栏 */
-#accountRail {{ background: {C_DARKEST}; border: none; }}
-#accountBtn {{
-    background: {C_BG};
-    border-radius: 22px;
-    border: 2px solid transparent;
-    color: {C_TEXT};
-    font-size: 16px;
-    font-weight: bold;
-}}
-#accountBtn:hover {{ border-radius: 16px; background: {C_ACCENT}; }}
-#accountBtn:checked {{ border-radius: 16px; border: 2px solid {C_TEXT}; background: {C_ACCENT}; }}
-
-/* 侧栏 */
 #sidebar {{ background: {C_SIDEBAR}; border: none; }}
-#roomTitle {{ font-size: 15px; font-weight: bold; color: #ffffff; padding: 4px; }}
-#channelItem {{
-    background: {C_HOVER};
-    border-radius: 6px;
-    padding: 8px 10px;
-    color: #ffffff;
-    font-weight: 600;
-}}
-#mutedLabel {{ color: {C_TEXT_MUTED}; font-size: 11px; }}
+#userLabel {{ font-size: 14px; font-weight: bold; color: #ffffff; }}
+#userSub {{ color: {C_TEXT_MUTED}; font-size: 11px; }}
+#sectionLabel {{ color: {C_TEXT_MUTED}; font-size: 11px; font-weight: bold; padding-top: 6px; }}
 
-/* 聊天区 */
-#chatHeader {{
-    background: {C_BG};
-    border-bottom: 1px solid #26282c;
-    padding: 10px 16px;
-}}
+#roomList {{ background: {C_SIDEBAR}; border: none; }}
+#roomList::item {{ color: {C_TEXT}; padding: 8px 10px; border-radius: 6px; }}
+#roomList::item:selected {{ background: {C_ACCENT}; color: #ffffff; }}
+#roomList::item:hover {{ background: {C_HOVER}; }}
+
+#chatHeader {{ background: {C_BG}; border-bottom: 1px solid #26282c; padding: 10px 16px; }}
 #chatTitle {{ font-size: 16px; font-weight: bold; color: #ffffff; }}
 #chatSub {{ color: {C_TEXT_MUTED}; font-size: 12px; }}
 
 #msgList {{ background: {C_BG}; border: none; }}
 #msgList::item {{ border: none; background: transparent; }}
-#msgList::item:selected {{ background: transparent; }}
 
 #inputBar {{ background: {C_BG}; border-top: 1px solid #26282c; }}
 #msgInput {{
-    background: {C_INPUT};
-    border: none;
-    border-radius: 8px;
-    padding: 10px;
-    color: {C_TEXT};
-    font-size: 14px;
+    background: {C_INPUT}; border: none; border-radius: 8px;
+    padding: 10px; color: {C_TEXT}; font-size: 14px;
 }}
 #sendBtn {{
-    background: {C_ACCENT};
-    color: #ffffff;
-    border: none;
-    border-radius: 8px;
-    padding: 10px 18px;
-    font-weight: 600;
+    background: {C_ACCENT}; color: #ffffff; border: none; border-radius: 8px;
+    padding: 10px 18px; font-weight: 600;
 }}
 #sendBtn:hover {{ background: #4752c4; }}
-#sendBtn:pressed {{ background: #3c45a5; }}
 
 QLineEdit {{
-    background: {C_INPUT};
-    border: 1px solid #202225;
-    border-radius: 6px;
-    padding: 8px;
-    color: {C_TEXT};
+    background: {C_INPUT}; border: 1px solid #202225; border-radius: 6px;
+    padding: 8px; color: {C_TEXT};
 }}
 QLineEdit:focus {{ border: 1px solid {C_ACCENT}; }}
 QDialog QLabel {{ color: {C_TEXT}; }}
 """
 
-# 消息发送者名字 → 稳定颜色
 _NAME_COLORS = [
     "#f23f43", "#f0b232", "#f2e03d", "#3ba55d",
     "#46b1d1", "#5865f2", "#9b59b6", "#e91e63",
@@ -159,12 +125,10 @@ def fmt_time(ts_ms: int) -> str:
 class MessageWidget(QWidget):
     def __init__(self, sender_name: str, sender_id: str, body: str, ts_ms: int, parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 6, 12, 6)
         lay.setSpacing(10)
 
-        # 头像：首字母 + 颜色
         avatar = QLabel(sender_name[:1].upper() if sender_name else "?")
         avatar.setFixedSize(40, 40)
         avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -180,9 +144,7 @@ class MessageWidget(QWidget):
         head = QHBoxLayout()
         head.setSpacing(8)
         name_lbl = QLabel(sender_name or sender_id)
-        name_lbl.setStyleSheet(
-            f"color: {name_color(sender_id)}; font-weight: bold; font-size: 14px;"
-        )
+        name_lbl.setStyleSheet(f"color: {name_color(sender_id)}; font-weight: bold; font-size: 14px;")
         time_lbl = QLabel(fmt_time(ts_ms))
         time_lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-size: 11px;")
         head.addWidget(name_lbl)
@@ -200,51 +162,41 @@ class MessageWidget(QWidget):
 
 
 # --------------------------------------------------------------------------
-# 登录/配置对话框
+# 登录对话框（单账号）
 # --------------------------------------------------------------------------
 class LoginDialog(QDialog):
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"{__app_name__} — 首次配置")
+        self.setWindowTitle(f"{__app_name__} — 登录")
         self.setMinimumWidth(460)
         self.cfg = cfg
 
         lay = QVBoxLayout(self)
-        title = QLabel("配置两个 Matrix 账号")
+        title = QLabel("登录你的 Matrix 账号")
         title.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff;")
         lay.addWidget(title)
-        sub = QLabel("程序A 和 程序B 各登录一个账号，在端到端加密房间里互相通信。")
+        sub = QLabel("登录后即可与好友进行端到端加密聊天。账号可在 element.io 等客户端注册。")
         sub.setStyleSheet(f"color: {C_TEXT_MUTED};")
         sub.setWordWrap(True)
         lay.addWidget(sub)
 
         form = QFormLayout()
         form.setSpacing(10)
-
         self.homeserver = QLineEdit(cfg.get("homeserver", "https://matrix.org"))
         self.proxy = QLineEdit(cfg.get("proxy", ""))
         self.proxy.setPlaceholderText("可选，例如 http://127.0.0.1:7890")
-
-        acct_a = cfg["accounts"]["a"]
-        acct_b = cfg["accounts"]["b"]
-        self.a_user = QLineEdit(acct_a.get("user_id", ""))
-        self.a_user.setPlaceholderText("@username:matrix.org")
-        self.a_pass = QLineEdit(acct_a.get("password", ""))
-        self.a_pass.setEchoMode(QLineEdit.EchoMode.Password)
-        self.b_user = QLineEdit(acct_b.get("user_id", ""))
-        self.b_user.setPlaceholderText("@username:matrix.org")
-        self.b_pass = QLineEdit(acct_b.get("password", ""))
-        self.b_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self.user_id = QLineEdit(cfg.get("user_id", ""))
+        self.user_id.setPlaceholderText("@username:matrix.org")
+        self.password = QLineEdit(cfg.get("password", ""))
+        self.password.setEchoMode(QLineEdit.EchoMode.Password)
 
         form.addRow("Homeserver", self.homeserver)
         form.addRow("代理（可选）", self.proxy)
-        form.addRow("程序A 用户名", self.a_user)
-        form.addRow("程序A 密码", self.a_pass)
-        form.addRow("程序B 用户名", self.b_user)
-        form.addRow("程序B 密码", self.b_pass)
+        form.addRow("用户名", self.user_id)
+        form.addRow("密码", self.password)
         lay.addLayout(form)
 
-        btn = QPushButton("连接")
+        btn = QPushButton("登录")
         btn.setStyleSheet(
             f"background: {C_ACCENT}; color: white; border: none; border-radius: 6px;"
             "padding: 10px; font-weight: 600;"
@@ -253,18 +205,13 @@ class LoginDialog(QDialog):
         lay.addWidget(btn)
 
     def _on_ok(self):
-        if not (self.a_user.text().strip() and self.a_pass.text().strip()):
-            QMessageBox.warning(self, "提示", "请填写程序A 的用户名和密码")
-            return
-        if not (self.b_user.text().strip() and self.b_pass.text().strip()):
-            QMessageBox.warning(self, "提示", "请填写程序B 的用户名和密码")
+        if not (self.user_id.text().strip() and self.password.text().strip()):
+            QMessageBox.warning(self, "提示", "请填写用户名和密码")
             return
         self.cfg["homeserver"] = self.homeserver.text().strip() or "https://matrix.org"
         self.cfg["proxy"] = self.proxy.text().strip()
-        self.cfg["accounts"]["a"]["user_id"] = self.a_user.text().strip()
-        self.cfg["accounts"]["a"]["password"] = self.a_pass.text().strip()
-        self.cfg["accounts"]["b"]["user_id"] = self.b_user.text().strip()
-        self.cfg["accounts"]["b"]["password"] = self.b_pass.text().strip()
+        self.cfg["user_id"] = self.user_id.text().strip()
+        self.cfg["password"] = self.password.text().strip()
         save_config(self.cfg)
         self.accept()
 
@@ -303,13 +250,14 @@ class MainWindow(QWidget):
     def __init__(self, service: MatrixService):
         super().__init__()
         self.service = service
-        self.current_key = "a"
+        self.current_room_id = ""
         self._started = False
 
         self.setWindowTitle(f"{__app_name__} v{__version__}")
-        self.resize(1000, 680)
+        self.resize(1050, 700)
 
         service.on_message = self._on_message
+        service.on_room_update = self._refresh_rooms
         service.on_status = self._on_status
 
         self._build_ui()
@@ -317,63 +265,62 @@ class MainWindow(QWidget):
         self.updater = UpdateChecker()
         self.updater.found.connect(self._on_update_found)
 
+        # 定期刷新房间列表
+        self._room_timer = QTimer(self)
+        self._room_timer.timeout.connect(self._refresh_rooms)
+        self._room_timer.start(5000)
+
         QTimer.singleShot(0, lambda: asyncio.create_task(self._startup()))
 
-    # ---------------- UI 构建 ----------------
+    # ---------------- UI ----------------
     def _build_ui(self):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # 最左：账号栏
-        rail = QFrame()
-        rail.setObjectName("accountRail")
-        rail.setFixedWidth(72)
-        rail_lay = QVBoxLayout(rail)
-        rail_lay.setContentsMargins(12, 12, 12, 12)
-        rail_lay.setSpacing(12)
-        rail_lay.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-
-        self.group = QButtonGroup(self)
-        self.group.setExclusive(True)
-        self.btn_a = self._make_account_btn("A", "a")
-        self.btn_b = self._make_account_btn("B", "b")
-        self.btn_a.setChecked(True)
-        rail_lay.addWidget(self.btn_a)
-        rail_lay.addWidget(self.btn_b)
-        rail_lay.addStretch(1)
-        about = QPushButton("?")
-        about.setFixedSize(44, 44)
-        about.setObjectName("accountBtn")
-        about.setToolTip(f"{__app_name__} v{__version__}")
-        about.clicked.connect(self._show_about)
-        rail_lay.addWidget(about)
-        root.addWidget(rail)
-
-        # 侧栏
+        # 侧栏：账号 + 房间列表 + 按钮
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(220)
+        sidebar.setFixedWidth(250)
         side_lay = QVBoxLayout(sidebar)
         side_lay.setContentsMargins(10, 12, 10, 12)
-        side_lay.setSpacing(8)
+        side_lay.setSpacing(6)
 
-        room_title = QLabel("MChat 通道")
-        room_title.setObjectName("roomTitle")
-        side_lay.addWidget(room_title)
+        self.user_label = QLabel("未登录")
+        self.user_label.setObjectName("userLabel")
+        self.user_sub = QLabel("正在连接……")
+        self.user_sub.setObjectName("userSub")
+        side_lay.addWidget(self.user_label)
+        side_lay.addWidget(self.user_sub)
 
-        channel = QLabel("#  MChat 通道")
-        channel.setObjectName("channelItem")
-        side_lay.addWidget(channel)
+        side_lay.addSpacing(8)
+        group_lbl = QLabel("群聊")
+        group_lbl.setObjectName("sectionLabel")
+        side_lay.addWidget(group_lbl)
+        self.group_list = QListWidget()
+        self.group_list.setObjectName("roomList")
+        self.group_list.itemClicked.connect(self._on_room_clicked)
+        side_lay.addWidget(self.group_list, 1)
 
-        side_lay.addStretch(1)
+        dm_lbl = QLabel("私聊")
+        dm_lbl.setObjectName("sectionLabel")
+        side_lay.addWidget(dm_lbl)
+        self.dm_list = QListWidget()
+        self.dm_list.setObjectName("roomList")
+        self.dm_list.itemClicked.connect(self._on_room_clicked)
+        side_lay.addWidget(self.dm_list, 1)
 
-        self.status_a = QLabel("程序A：未连接")
-        self.status_b = QLabel("程序B：未连接")
-        self.status_a.setObjectName("mutedLabel")
-        self.status_b.setObjectName("mutedLabel")
-        side_lay.addWidget(self.status_a)
-        side_lay.addWidget(self.status_b)
+        # 底部按钮
+        btn_row = QHBoxLayout()
+        self.add_btn = QPushButton("＋ 新建")
+        self.add_btn.setStyleSheet(self._btn_style())
+        self.add_btn.clicked.connect(self._show_new_menu)
+        self.join_btn = QPushButton("加入")
+        self.join_btn.setStyleSheet(self._btn_style())
+        self.join_btn.clicked.connect(self._join_room)
+        btn_row.addWidget(self.add_btn)
+        btn_row.addWidget(self.join_btn)
+        side_lay.addLayout(btn_row)
         root.addWidget(sidebar)
 
         # 聊天区
@@ -384,22 +331,28 @@ class MainWindow(QWidget):
 
         header = QFrame()
         header.setObjectName("chatHeader")
-        header_lay = QVBoxLayout(header)
+        header_lay = QHBoxLayout(header)
         header_lay.setContentsMargins(16, 8, 16, 8)
-        header_lay.setSpacing(2)
-        self.chat_title = QLabel("MChat 通道")
+        header_text = QVBoxLayout()
+        header_text.setSpacing(2)
+        self.chat_title = QLabel("选择一个房间开始聊天")
         self.chat_title.setObjectName("chatTitle")
-        self.chat_sub = QLabel("正在连接……")
+        self.chat_sub = QLabel("登录后，左侧会显示你加入的房间")
         self.chat_sub.setObjectName("chatSub")
-        header_lay.addWidget(self.chat_title)
-        header_lay.addWidget(self.chat_sub)
+        header_text.addWidget(self.chat_title)
+        header_text.addWidget(self.chat_sub)
+        header_lay.addLayout(header_text, 1)
+        self.invite_btn = QPushButton("邀请好友")
+        self.invite_btn.setStyleSheet(self._btn_style())
+        self.invite_btn.clicked.connect(self._invite)
+        self.invite_btn.setEnabled(False)
+        header_lay.addWidget(self.invite_btn)
         chat_lay.addWidget(header)
 
         self.msg_list = QListWidget()
         self.msg_list.setObjectName("msgList")
         self.msg_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.msg_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        self.msg_list.setSpacing(0)
         chat_lay.addWidget(self.msg_list, 1)
 
         input_bar = QFrame()
@@ -409,77 +362,87 @@ class MainWindow(QWidget):
         input_lay.setSpacing(10)
         self.input = MessageInput()
         self.input.setObjectName("msgInput")
-        self.input.setPlaceholderText("发消息给房间（以当前身份）…… Enter 发送，Shift+Enter 换行")
-        self.input.setFixedHeight(72)
+        self.input.setPlaceholderText("发消息…… Enter 发送，Shift+Enter 换行")
+        self.input.setFixedHeight(64)
+        self.input.setEnabled(False)
         self.input.submitted.connect(self._send)
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("sendBtn")
         self.send_btn.clicked.connect(self._send)
+        self.send_btn.setEnabled(False)
         input_lay.addWidget(self.input, 1)
         input_lay.addWidget(self.send_btn, 0, Qt.AlignmentFlag.AlignBottom)
         chat_lay.addWidget(input_bar)
 
         root.addWidget(chat, 1)
 
-    def _make_account_btn(self, text: str, key: str) -> QPushButton:
-        btn = QPushButton(text)
-        btn.setObjectName("accountBtn")
-        btn.setFixedSize(48, 48)
-        btn.setCheckable(True)
-        btn.setToolTip(f"以「{account(load_config(), key)['label']}」身份发送")
-        btn.clicked.connect(lambda _=False, k=key: self._switch_key(k))
-        self.group.addButton(btn)
-        return btn
+    @staticmethod
+    def _btn_style() -> str:
+        return (
+            f"background: {C_INPUT}; color: {C_TEXT}; border: none;"
+            "border-radius: 6px; padding: 8px;"
+        )
 
     # ---------------- 启动 ----------------
     async def _startup(self):
         cfg = load_config()
-        if not self._is_configured(cfg):
+        if not is_configured(cfg):
             dlg = LoginDialog(cfg, self)
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 QApplication.quit()
                 return
             cfg = load_config()
 
-        self.chat_sub.setText("正在登录两个账号……")
+        self.user_label.setText(cfg["user_id"].split(":")[0].lstrip("@"))
+        self.user_sub.setText("正在登录……")
         try:
-            await self.service.connect("a")
-            await self.service.connect("b")
+            await self.service.connect()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "登录失败", str(exc))
-            self.chat_sub.setText("登录失败，请检查配置")
+            self.user_sub.setText("登录失败，请检查配置")
             return
 
-        # 首次需要初始化房间
-        if not self.service.room_id:
-            self.chat_sub.setText("首次运行：正在创建加密房间并握手……")
-            try:
-                await self.service.setup_room()
-            except Exception as exc:  # noqa: BLE001
-                QMessageBox.critical(self, "初始化失败", str(exc))
-                self.chat_sub.setText("初始化失败")
-                return
-
-        self.chat_sub.setText("已连接 · 端到端加密已启用")
-        await self._load_history()
-
-        # 启动更新检查
+        self.user_sub.setText("已连接 · 端到端加密已启用")
+        self._refresh_rooms()
         self.updater.check()
 
-    @staticmethod
-    def _is_configured(cfg: dict) -> bool:
-        a = cfg["accounts"]["a"]
-        b = cfg["accounts"]["b"]
-        return bool(
-            a.get("user_id")
-            and b.get("user_id")
-            and (a.get("password") or a.get("access_token"))
-            and (b.get("password") or b.get("access_token"))
-        )
+    # ---------------- 房间列表 ----------------
+    def _refresh_rooms(self):
+        if not self.service.client:
+            return
+        rooms = self.service.rooms()
+        self.group_list.clear()
+        self.dm_list.clear()
+        for r in rooms:
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, r["room_id"])
+            icon = "#" if not r["is_dm"] else "@"
+            name = r["display_name"]
+            item.setText(f"{icon}  {name}")
+            if r["room_id"] == self.current_room_id:
+                item.setSelected(True)
+            target = self.dm_list if r["is_dm"] else self.group_list
+            target.addItem(item)
 
-    async def _load_history(self):
+    def _on_room_clicked(self, item):
+        room_id = item.data(Qt.ItemDataRole.UserRole)
+        if room_id != self.current_room_id:
+            self.current_room_id = room_id
+            asyncio.create_task(self._load_room(room_id))
+
+    async def _load_room(self, room_id):
+        self.msg_list.clear()
+        # 更新标题
+        for r in self.service.rooms():
+            if r["room_id"] == room_id:
+                self.chat_title.setText(r["display_name"])
+                self.chat_sub.setText(f"{r['member_count']} 名成员" + (" · 私聊" if r["is_dm"] else " · 群聊"))
+                break
+        self.input.setEnabled(True)
+        self.send_btn.setEnabled(True)
+        self.invite_btn.setEnabled(True)
         try:
-            msgs = await self.service.history("a", limit=50)
+            msgs = await self.service.history(room_id, limit=50)
             for ev in reversed(msgs):
                 self._append_message(
                     ev.sender,
@@ -488,48 +451,38 @@ class MainWindow(QWidget):
                 )
         except Exception:  # noqa: BLE001
             pass
+        self.msg_list.scrollToBottom()
 
-    # ---------------- 消息回调 ----------------
-    def _on_message(self, key, label, sender_name, sender_id, body, ts_ms):
-        # 只显示文本，忽略握手/系统提示之外的自己回声也正常显示
-        self._append_message(sender_id, body, ts_ms)
+    # ---------------- 消息 ----------------
+    def _on_message(self, room_id, sender_name, sender_id, body, ts_ms):
+        if room_id == self.current_room_id:
+            self._append_message(sender_id, body, ts_ms)
 
     def _append_message(self, sender_id, body, ts_ms):
-        cfg = load_config()
-        name = self._display_name(cfg, sender_id)
+        name = self._display_name(sender_id)
         item = QListWidgetItem()
         item.setSizeHint(QSize(0, 60))
-        widget = MessageWidget(name, sender_id, body, ts_ms)
         self.msg_list.addItem(item)
-        self.msg_list.setItemWidget(item, widget)
-        # 限制条数，避免无限增长
+        self.msg_list.setItemWidget(item, MessageWidget(name, sender_id, body, ts_ms))
         while self.msg_list.count() > 500:
             self.msg_list.takeItem(0)
         self.msg_list.scrollToBottom()
 
-    def _display_name(self, cfg: dict, sender_id: str) -> str:
-        for key in ("a", "b"):
-            acct = cfg["accounts"][key]
-            if acct.get("user_id") == sender_id:
-                return acct.get("label", key)
+    def _display_name(self, sender_id):
+        # 在房间成员里找显示名
+        if self.service.client:
+            room = self.service.client.rooms.get(self.current_room_id)
+            if room:
+                return room.user_name(sender_id) or sender_id
         return sender_id
 
-    def _on_status(self, key, text):
-        label = account(load_config(), key)["label"]
-        if key == "a":
-            self.status_a.setText(f"{label}：{text}")
-        elif key == "b":
-            self.status_b.setText(f"{label}：{text}")
+    def _on_status(self, text):
+        self.user_sub.setText(f"已连接 · {text}")
 
     # ---------------- 交互 ----------------
-    def _switch_key(self, key):
-        self.current_key = key
-        label = account(load_config(), key)["label"]
-        self.input.setPlaceholderText(
-            f"以「{label}」身份发消息…… Enter 发送，Shift+Enter 换行"
-        )
-
     def _send(self):
+        if not self.current_room_id:
+            return
         text = self.input.toPlainText().strip()
         if not text:
             return
@@ -538,22 +491,97 @@ class MainWindow(QWidget):
 
     async def _do_send(self, text):
         try:
-            await self.service.send_text(self.current_key, text)
+            await self.service.send_text(self.current_room_id, text)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "发送失败", str(exc))
 
+    def _show_new_menu(self):
+        menu = QMenu(self)
+        act_group = menu.addAction("创建群聊房间")
+        act_dm = menu.addAction("发起私聊")
+        chosen = menu.exec(self.add_btn.mapToGlobal(self.add_btn.rect().bottomLeft()))
+        if chosen == act_group:
+            self._create_group()
+        elif chosen == act_dm:
+            self._create_dm()
+
+    def _create_group(self):
+        name, ok = QInputDialog.getText(self, "创建群聊", "房间名称：")
+        if not ok or not name.strip():
+            return
+        asyncio.create_task(self._do_create_group(name.strip()))
+
+    async def _do_create_group(self, name):
+        try:
+            room_id = await self.service.create_group_room(name)
+            self.current_room_id = room_id
+            self._refresh_rooms()
+            await self._load_room(room_id)
+            # 提示邀请好友
+            if QMessageBox.question(self, "房间已创建", "群聊已创建。是否现在邀请好友？") == QMessageBox.StandardButton.Yes:
+                self._invite()
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "创建失败", str(exc))
+
+    def _create_dm(self):
+        uid, ok = QInputDialog.getText(self, "发起私聊", "好友的 Matrix ID（如 @friend:matrix.org）：")
+        if not ok or not uid.strip():
+            return
+        asyncio.create_task(self._do_create_dm(uid.strip()))
+
+    async def _do_create_dm(self, uid):
+        try:
+            room_id = await self.service.create_dm(uid)
+            self.current_room_id = room_id
+            self._refresh_rooms()
+            await self._load_room(room_id)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "私聊失败", str(exc))
+
+    def _join_room(self):
+        rid, ok = QInputDialog.getText(self, "加入房间", "房间 ID 或邀请链接（!xxx:matrix.org）：")
+        if not ok or not rid.strip():
+            return
+        rid = rid.strip()
+        # 从邀请链接提取房间 ID
+        if "/" in rid:
+            rid = rid.split("/")[-1].split("?")[0]
+        asyncio.create_task(self._do_join_room(rid))
+
+    async def _do_join_room(self, rid):
+        try:
+            await self.service.join_room(rid)
+            self.current_room_id = rid
+            self._refresh_rooms()
+            await self._load_room(rid)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "加入失败", str(exc))
+
+    def _invite(self):
+        if not self.current_room_id:
+            return
+        uid, ok = QInputDialog.getText(self, "邀请好友", "好友的 Matrix ID（如 @friend:matrix.org）：")
+        if not ok or not uid.strip():
+            return
+        asyncio.create_task(self._do_invite(uid.strip()))
+
+    async def _do_invite(self, uid):
+        try:
+            await self.service.invite(self.current_room_id, uid)
+            QMessageBox.information(self, "已邀请", f"已向 {uid} 发送邀请")
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "邀请失败", str(exc))
+
+    # ---------------- 更新 ----------------
     def _on_update_found(self, info):
         if not info or not is_newer(info.tag_name, __version__):
             return
         self.chat_sub.setText(f"有新版本 {info.tag_name} 可用")
         self.chat_sub.setStyleSheet("color: #f0b232; font-size: 12px;")
-
         setup_asset = self._find_setup_asset(info)
         box = QMessageBox(self)
         box.setWindowTitle("发现新版本")
-        box.setText(
-            f"当前版本 {__version__}，最新版本 {info.tag_name}。\n\n{info.body[:200]}"
-        )
+        box.setText(f"当前版本 {__version__}，最新版本 {info.tag_name}。\n\n{info.body[:200]}")
         dl_btn = None
         if setup_asset:
             dl_btn = box.addButton("下载安装包", QMessageBox.ButtonRole.AcceptRole)
@@ -562,7 +590,6 @@ class MainWindow(QWidget):
             open_btn = box.addButton("打开下载页", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
         box.exec()
-
         clicked = box.clickedButton()
         if dl_btn is not None and clicked == dl_btn:
             self._download_update(setup_asset)
@@ -598,9 +625,7 @@ class MainWindow(QWidget):
     def _on_download_done(self, dest):
         self.chat_sub.setText("新版本已下载完成")
         if QMessageBox.question(
-            self,
-            "下载完成",
-            f"安装包已下载到：\n{dest}\n\n是否立即运行安装程序？",
+            self, "下载完成", f"安装包已下载到：\n{dest}\n\n是否立即运行安装程序？",
         ) == QMessageBox.StandardButton.Yes:
             subprocess.Popen([dest])
 
@@ -608,17 +633,8 @@ class MainWindow(QWidget):
         self.chat_sub.setText("下载失败")
         QMessageBox.warning(self, "下载失败", msg)
 
-    def _show_about(self):
-        QMessageBox.information(
-            self,
-            "关于",
-            f"{__app_name__} v{__version__}\n\n"
-            "基于 Matrix 协议的端到端加密聊天应用。\n"
-            "让两个你自己的程序通过加密房间互相通信。",
-        )
-
     def closeEvent(self, e):
-        if self.service.clients:
+        if self.service.client:
             asyncio.create_task(self.service.close())
         super().closeEvent(e)
 
