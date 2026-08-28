@@ -423,7 +423,8 @@ class MainWindow(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, r["room_id"])
             icon = "#" if not r["is_dm"] else "@"
             name = r["display_name"]
-            item.setText(f"{icon}  {name}")
+            unread = r.get("unread", 0)
+            item.setText(f"{icon}  {name}" + (f"  ({unread})" if unread else ""))
             if r["room_id"] == self.current_room_id:
                 item.setSelected(True)
             target = self.dm_list if r["is_dm"] else self.group_list
@@ -438,6 +439,8 @@ class MainWindow(QWidget):
     async def _load_room(self, room_id):
         self.msg_list.clear()
         self._seen_events.clear()
+        self.service.mark_read(room_id)
+        self._refresh_rooms()
         # 更新标题
         for r in self.service.rooms():
             if r["room_id"] == room_id:
