@@ -360,13 +360,13 @@ class MatrixService:
             ".bmp": "image/bmp",
         }.get(suffix.lower(), "image/png")
 
-    async def history(self, room_id: str, limit: int = 100):
-        """返回房间历史（旧→新），解密失败的消息用占位文本代替，不丢弃。"""
+    async def history(self, room_id: str, limit: int = 100, from_token: "str | None" = None):
+        """返回 (房间历史列表[旧→新], end_token)；解密失败的消息用占位文本代替。"""
         if not self.client:
-            return []
-        resp = await self.client.room_messages(room_id, start=None, limit=limit)
+            return [], None
+        resp = await self.client.room_messages(room_id, start=from_token, limit=limit)
         if isinstance(resp, RoomMessagesError):
-            return []
+            return [], None
         out = []
         for ev in resp.chunk:
             if isinstance(ev, MegolmEvent):
@@ -439,7 +439,7 @@ class MatrixService:
                         "image_url": self._encrypted_media_info(ev),
                     }
                 )
-        return list(reversed(out))  # 旧 → 新
+        return list(reversed(out)), resp.end  # 旧 → 新, end token
 
     # ---------------- 房间操作 ----------------
     async def create_group_room(self, name: str, invite_ids: list | None = None) -> str:
