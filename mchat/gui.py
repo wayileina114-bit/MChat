@@ -552,10 +552,12 @@ class MainWindow(QWidget):
             await self.service.connect()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "登录失败", str(exc))
-            self.user_sub.setText("登录失败，请检查配置")
+            self.user_sub.setText("❌ 登录失败，请检查配置")
+            self.user_sub.setStyleSheet("color: #f23f43; font-size: 11px;")
             return
 
-        self.user_sub.setText("已连接 · 端到端加密已启用")
+        self.user_sub.setText("🟢 已连接 · 端到端加密已启用")
+        self.user_sub.setStyleSheet("color: #3ba55d; font-size: 11px;")
         self._refresh_rooms()
         if not self.service.rooms():
             self.chat_title.setText("欢迎使用 MChat")
@@ -825,7 +827,12 @@ class MainWindow(QWidget):
         self.send_btn.setEnabled(has_text and bool(self.current_room_id))
 
     def _on_status(self, text):
-        self.user_sub.setText(f"已连接 · {text}")
+        if "中断" in text or "重试" in text:
+            self.user_sub.setText(f"⚠️ 连接中断，自动重连中……")
+            self.user_sub.setStyleSheet("color: #f0b232; font-size: 11px;")
+        else:
+            self.user_sub.setText(f"🟢 已连接 · {text}")
+            self.user_sub.setStyleSheet("color: #3ba55d; font-size: 11px;")
 
     def _room_name(self, room_id: str) -> str:
         for r in self.service.rooms():
@@ -905,6 +912,7 @@ class MainWindow(QWidget):
                 widget.set_status("发送中")
                 self._pending_widgets[event_id] = widget
         except Exception as exc:  # noqa: BLE001
+            self.input.setPlainText(text)  # 恢复输入框，方便直接重试
             QMessageBox.warning(self, "发送失败", str(exc))
 
     def _show_new_menu(self):
