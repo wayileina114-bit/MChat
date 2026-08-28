@@ -12,7 +12,7 @@ import threading
 from datetime import datetime, timedelta
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QImage
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -137,10 +137,20 @@ def fmt_time(ts_ms: int) -> str:
 # --------------------------------------------------------------------------
 # 消息条目
 # --------------------------------------------------------------------------
+class ClickableLabel(QLabel):
+    clicked = Signal()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(e)
+
+
 class MessageWidget(QWidget):
     def __init__(self, sender_name: str, sender_id: str, body: str, ts_ms: int, parent=None, is_placeholder: bool = False, image_url: str | None = None):
         super().__init__(parent)
         self.image_label = None
+        self._image_data = None
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 6, 12, 6)
         lay.setSpacing(10)
@@ -173,12 +183,13 @@ class MessageWidget(QWidget):
         col.addLayout(head)
 
         if image_url:
-            self.image_label = QLabel("🖼️ 图片加载中……")
+            self.image_label = ClickableLabel("🖼️ 图片加载中……")
             self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.image_label.setMinimumSize(160, 100)
             self.image_label.setStyleSheet(
                 f"background: {C_INPUT}; border-radius: 8px; color: {C_TEXT_MUTED};"
             )
+            self.image_label.clicked.connect(self._open_image)
             col.addWidget(self.image_label)
         else:
             body_lbl = QLabel()
@@ -202,6 +213,7 @@ class MessageWidget(QWidget):
         label = getattr(self, "image_label", None)
         if not label or not data:
             return
+        self._image_data = data
         pixmap = QPixmap()
         if not pixmap.loadFromData(data):
             label.setText("🖼️ 图片无法显示")
@@ -210,6 +222,18 @@ class MessageWidget(QWidget):
         label.setPixmap(scaled)
         label.setFixedSize(scaled.size())
         label.setStyleSheet("")
+        label.setToolTip("点击查看原图")
+
+    def _open_image(self):
+        if not self._image_data:
+            return
+        path = os.path.join(tempfile.gettempdir(), f"mchat_view_{datetime.now().strftime('%H%M%S%f')}.png")
+        with open(path, "wb") as f:
+            f.write(self._image_data)
+        try:
+            os.startfile(path)  # Windows 用系统默认程序打开
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # --------------------------------------------------------------------------
@@ -284,6 +308,7 @@ class UpdateChecker(QObject):
 # --------------------------------------------------------------------------
 class MessageInput(QPlainTextEdit):
     submitted = Signal()
+    image_pasted = Signal(object)  # QImage
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
@@ -292,6 +317,15 @@ class MessageInput(QPlainTextEdit):
             self.submitted.emit()
             return
         super().keyPressEvent(e)
+
+    def insertFromMimeData(self, source):
+        # 粘贴的是图片则直接作为图片消息发送，不插入文本
+        if source.hasImage():
+            image = source.imageData()
+            if image and not image.isNull():
+                self.image_pasted.emit(image)
+                return
+        super().insertFromMimeData(source)
 
 
 # --------------------------------------------------------------------------
@@ -446,6 +480,7 @@ class MainWindow(QWidget):
         self.input.setEnabled(False)
         self.input.submitted.connect(self._send)
         self.input.textChanged.connect(self._on_input_changed)
+        self.input.image_pasted.connect(self._on_image_pasted)
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("sendBtn")
         self.send_btn.clicked.connect(self._send)
@@ -702,6 +737,13 @@ class MainWindow(QWidget):
             return
         self.input.clear()
         asyncio.create_task(self._do_send(text))
+
+    def _on_image_pasted(self, qimage):
+        if not self.current_room_id:
+            return
+        path = os.path.join(tempfile.gettempdir(), f"mchat_paste_{datetime.now().strftime('%H%M%S%f')}.png")
+        qimage.save(path)
+        asyncio.create_task(self._do_send_image(path))
 
     def _send_image(self):
         if not self.current_room_id:
