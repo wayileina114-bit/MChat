@@ -452,10 +452,20 @@ class MainWindow(QWidget):
         for r in rooms:
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, r["room_id"])
+            item.setSizeHint(QSize(0, 40))
             icon = "#" if not r["is_dm"] else "@"
             name = r["display_name"]
             unread = r.get("unread", 0)
-            item.setText(f"{icon}  {name}" + (f"  ({unread})" if unread else ""))
+            unread_txt = f"  ({unread})" if unread else ""
+            lm = r.get("last_message")
+            if lm:
+                sender, preview = lm
+                preview = preview.replace("\n", " ").strip()
+                if len(preview) > 18:
+                    preview = preview[:18] + "…"
+                item.setText(f"{icon} {name}{unread_txt}\n  {sender}: {preview}")
+            else:
+                item.setText(f"{icon} {name}{unread_txt}")
             if r["room_id"] == self.current_room_id:
                 item.setSelected(True)
             target = self.dm_list if r["is_dm"] else self.group_list
