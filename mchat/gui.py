@@ -599,6 +599,7 @@ class MainWindow(QWidget):
         self.msg_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.msg_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.msg_list.customContextMenuRequested.connect(self._show_msg_context_menu)
+        self.msg_list.itemDoubleClicked.connect(self._on_msg_double_clicked)
         self.msg_list.verticalScrollBar().valueChanged.connect(self._on_scroll)
         chat_lay.addWidget(self.msg_list, 1)
 
@@ -975,6 +976,14 @@ class MainWindow(QWidget):
         lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-size: 11px; background: transparent;")
         self.msg_list.setItemWidget(item, lbl)
 
+    def _on_msg_double_clicked(self, item):
+        # 双击消息 → 快捷回复
+        body = item.data(Qt.ItemDataRole.UserRole)
+        event_id = item.data(Qt.ItemDataRole.UserRole + 1)
+        sender_id = item.data(Qt.ItemDataRole.UserRole + 2)
+        if body and event_id and not body.startswith("🔒"):
+            self._set_reply(event_id, sender_id, body)
+
     def _show_msg_context_menu(self, pos):
         item = self.msg_list.itemAt(pos)
         if not item:
@@ -998,7 +1007,8 @@ class MainWindow(QWidget):
             act_redact = menu.addAction("撤回消息")
         chosen = menu.exec(self.msg_list.viewport().mapToGlobal(pos))
         if chosen == act_copy:
-            QApplication.clipboard().setText(body)
+            sender_name = self._display_name(sender_id) if sender_id else ""
+            QApplication.clipboard().setText(f"[{sender_name}] {body}")
         elif chosen == act_reply:
             self._set_reply(event_id, sender_id, body)
         elif act_edit and chosen == act_edit:
