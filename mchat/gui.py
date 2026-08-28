@@ -651,6 +651,8 @@ class MainWindow(QWidget):
             unread_txt = f"  ({unread})" if unread else ""
             if self.service.is_muted(r["room_id"]):
                 name = f"🔕 {name}"
+            if self.service.is_pinned(r["room_id"]):
+                name = f"📌 {name}"
             lm = r.get("last_message")
             if lm:
                 sender, preview = lm
@@ -696,13 +698,21 @@ class MainWindow(QWidget):
         room_id = item.data(Qt.ItemDataRole.UserRole)
         menu = QMenu(self)
         muted = self.service.is_muted(room_id)
+        pinned = self.service.is_pinned(room_id)
+        act_pin = menu.addAction("取消置顶" if pinned else "置顶房间")
         act_mute = menu.addAction("取消静音" if muted else "静音房间")
         act_leave = menu.addAction("离开房间")
         chosen = menu.exec(widget.viewport().mapToGlobal(pos))
-        if chosen == act_mute:
+        if chosen == act_pin:
+            self._toggle_pin(room_id)
+        elif chosen == act_mute:
             self._toggle_mute(room_id)
         elif chosen == act_leave:
             self._leave_room(room_id)
+
+    def _toggle_pin(self, room_id):
+        self.service.toggle_pin(room_id)
+        self._refresh_rooms()
 
     def _toggle_mute(self, room_id):
         muted = self.service.toggle_mute(room_id)
