@@ -2,7 +2,7 @@
 ; 用法：ISCC.exe installer.iss  ->  产出 dist\MChat-Setup.exe
 
 #define MyAppName "MChat"
-#define MyAppVersion "1.2.1"
+#define MyAppVersion "1.2.2"
 #define MyAppPublisher "wayileina114"
 #define MyAppExeName "MChat.exe"
 
