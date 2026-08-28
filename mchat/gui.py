@@ -1033,6 +1033,7 @@ class MainWindow(QWidget):
         menu = QMenu(self)
         act_copy = menu.addAction("复制消息")
         act_reply = menu.addAction("回复")
+        act_speak = menu.addAction("🔊 朗读")
         act_fav = menu.addAction("取消收藏" if self.service.is_favorite(event_id) else "收藏消息")
         is_own = bool(sender_id and self.service.client and sender_id == self.service.client.user_id)
         is_text = not body.startswith("🖼️") and body != "🔒 无法解密的消息（缺少密钥）"
@@ -1049,6 +1050,8 @@ class MainWindow(QWidget):
             QApplication.clipboard().setText(f"[{sender_name}] {body}")
         elif chosen == act_reply:
             self._set_reply(event_id, sender_id, body)
+        elif chosen == act_speak:
+            self._speak_message(body)
         elif chosen == act_fav:
             self._toggle_favorite(event_id, sender_id, body)
         elif act_edit and chosen == act_edit:
@@ -1067,6 +1070,22 @@ class MainWindow(QWidget):
     def _cancel_reply(self):
         self._reply_to = None
         self._reply_label.hide()
+
+    def _speak_message(self, text):
+        # 用 Windows 自带 TTS 朗读消息（System.Speech）
+        try:
+            safe = text.replace("'", "''")[:500]
+            ps = (
+                "Add-Type -AssemblyName System.Speech; "
+                f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"$s.Speak('{safe}')"
+            )
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-Command", ps],
+                creationflags=0x08000000,  # 隐藏窗口
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _toggle_favorite(self, event_id, sender_id, body):
         name = self._display_name(sender_id) if sender_id else ""
