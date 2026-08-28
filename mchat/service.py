@@ -53,6 +53,7 @@ class MatrixService:
         self.on_room_update: Optional[RoomCallback] = None
         self.on_status: Optional[StatusCallback] = None
         self.on_key_received: Optional[KeyCallback] = None
+        self.unread: dict[str, int] = {}
 
     # ---------------- 客户端与登录 ----------------
     def make_client(self) -> AsyncClient:
@@ -106,15 +107,21 @@ class MatrixService:
         return client
 
     async def _sync_loop(self, client: AsyncClient) -> None:
-        try:
-            await client.sync_forever(timeout=30_000, loop_sleep_time=500)
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:  # noqa: BLE001
-            self._report(f"同步中断：{exc}")
+        # 断线自动重连：sync 异常退出后等待片刻再重试
+        while True:
+            try:
+                await client.sync_forever(timeout=30_000, loop_sleep_time=500)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001
+                self._report(f"同步中断，5 秒后重试：{exc}")
+                await asyncio.sleep(5)
 
     def _handle_event(self, room, event) -> None:
         if isinstance(event, RoomMessageText):
+            # 未读计数：别人发的消息 +1（自己发的不计）
+            if event.sender and event.sender != self.client.user_id:
+                self.unread[room.room_id] = self.unread.get(room.room_id, 0) + 1
             self._emit(
                 room.room_id,
                 event.event_id,
@@ -166,10 +173,14 @@ class MatrixService:
                     "is_dm": room.member_count == 2,
                     "member_count": room.member_count,
                     "topic": getattr(room, "topic", "") or "",
+                    "unread": self.unread.get(room_id, 0),
                 }
             )
         result.sort(key=lambda r: (r["is_dm"], r["display_name"].lower()))
         return result
+
+    def mark_read(self, room_id: str) -> None:
+        self.unread[room_id] = 0
 
     def invited_room_ids(self) -> list:
         if not self.client:
