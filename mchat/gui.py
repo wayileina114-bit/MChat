@@ -11,7 +11,7 @@ import tempfile
 import threading
 from datetime import datetime, timedelta
 
-from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap, QImage, QPainter, QBrush, QFont, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -55,6 +55,8 @@ C_TEXT_MUTED = "#8e9297"
 C_ACCENT = "#5865f2"
 C_ONLINE = "#3ba55d"
 C_HOVER = "#3c3f45"
+
+FONT_SIZE = 14  # 消息正文字号（可调）
 
 def build_qss():
     return f"""
@@ -240,11 +242,11 @@ class MessageWidget(QWidget):
             body_lbl.setOpenExternalLinks(True)
             if is_placeholder:
                 body_lbl.setText(body)
-                body_lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-style: italic; font-size: 14px;")
+                body_lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-style: italic; font-size: {FONT_SIZE}px;")
             else:
                 body_lbl.setText(linkify(body))
                 body_lbl.setTextFormat(Qt.TextFormat.RichText)
-                body_lbl.setStyleSheet(f"color: {C_TEXT}; font-size: 14px;")
+                body_lbl.setStyleSheet(f"color: {C_TEXT}; font-size: {FONT_SIZE}px;")
             col.addWidget(body_lbl)
 
         lay.addLayout(col, 1)
@@ -426,6 +428,18 @@ class MainWindow(QWidget):
 
         self.setWindowTitle(f"{__app_name__} v{__version__}")
         self.resize(1050, 700)
+        _settings = QSettings("MChat", "MChat")
+        _geom = _settings.value("window_geometry")
+        if _geom:
+            self.restoreGeometry(_geom)
+        self._settings = _settings
+        global FONT_SIZE
+        _fs = _settings.value("font_size")
+        if _fs:
+            try:
+                FONT_SIZE = min(max(int(_fs), 12), 22)
+            except Exception:  # noqa: BLE001
+                pass
 
         service.on_message = self._on_message
         service.on_room_update = self._refresh_rooms
@@ -523,11 +537,23 @@ class MainWindow(QWidget):
         self.logout_btn.setStyleSheet(self._btn_style())
         self.logout_btn.clicked.connect(self._logout)
         side_lay.addWidget(self.logout_btn)
+        btn_row2 = QHBoxLayout()
         self.theme_btn = QPushButton("🌓")
         self.theme_btn.setToolTip("切换深色/浅色主题")
         self.theme_btn.setStyleSheet(self._btn_style())
+        self.font_small_btn = QPushButton("A-")
+        self.font_small_btn.setToolTip("减小字体")
+        self.font_small_btn.setStyleSheet(self._btn_style())
+        self.font_small_btn.clicked.connect(lambda: self._adjust_font(-1))
+        self.font_big_btn = QPushButton("A+")
+        self.font_big_btn.setToolTip("增大字体")
+        self.font_big_btn.setStyleSheet(self._btn_style())
+        self.font_big_btn.clicked.connect(lambda: self._adjust_font(1))
         self.theme_btn.clicked.connect(self._toggle_theme)
-        side_lay.addWidget(self.theme_btn)
+        btn_row2.addWidget(self.theme_btn)
+        btn_row2.addWidget(self.font_small_btn)
+        btn_row2.addWidget(self.font_big_btn)
+        side_lay.addLayout(btn_row2)
         root.addWidget(sidebar)
 
         # 聊天区
@@ -1384,6 +1410,13 @@ class MainWindow(QWidget):
         self.chat_sub.setText("下载失败")
         QMessageBox.warning(self, "下载失败", msg)
 
+    def _adjust_font(self, delta):
+        global FONT_SIZE
+        FONT_SIZE = min(max(FONT_SIZE + delta, 12), 22)
+        if hasattr(self, "_settings"):
+            self._settings.setValue("font_size", FONT_SIZE)
+        self._rebuild_messages()
+
     def _toggle_theme(self):
         self._theme = "light" if getattr(self, "_theme", "dark") != "light" else "dark"
         apply_theme(self._theme)
@@ -1399,6 +1432,8 @@ class MainWindow(QWidget):
             asyncio.create_task(do_logout())
 
     def closeEvent(self, e):
+        if hasattr(self, "_settings"):
+            self._settings.setValue("window_geometry", self.saveGeometry())
         if self.service.client:
             asyncio.create_task(self.service.close())
         super().closeEvent(e)
