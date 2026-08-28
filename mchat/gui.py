@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap, QImage, QPainter, QBrush, QFont, QIcon
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QDialog,
     QFileDialog,
@@ -412,7 +413,9 @@ class MainWindow(QWidget):
         self.tray.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
         self.tray.setToolTip(f"{__app_name__} v{__version__}")
         self.tray.activated.connect(self._on_tray_activated)
+        self.tray.messageClicked.connect(self._on_notify_clicked)
         self.tray.show()
+        self._notify_room = None
 
         self.updater = UpdateChecker()
         self.updater.found.connect(self._on_update_found)
@@ -517,6 +520,12 @@ class MainWindow(QWidget):
         self.members_btn.clicked.connect(self._show_members)
         self.members_btn.setEnabled(False)
         header_lay.addWidget(self.members_btn)
+        self.search_btn = QPushButton("🔍")
+        self.search_btn.setToolTip("搜索消息")
+        self.search_btn.setStyleSheet(self._btn_style())
+        self.search_btn.clicked.connect(self._search_message)
+        self.search_btn.setEnabled(False)
+        header_lay.addWidget(self.search_btn)
         self.invite_btn = QPushButton("邀请好友")
         self.invite_btn.setStyleSheet(self._btn_style())
         self.invite_btn.clicked.connect(self._invite)
@@ -709,6 +718,7 @@ class MainWindow(QWidget):
         self.send_btn.setEnabled(True)
         self.invite_btn.setEnabled(True)
         self.members_btn.setEnabled(True)
+        self.search_btn.setEnabled(True)
         self.image_btn.setEnabled(True)
         self._history_end_token = None
         try:
@@ -741,6 +751,7 @@ class MainWindow(QWidget):
                 and body != "🔒 无法解密的消息（缺少密钥）"
             ):
                 room_name = self._room_name(room_id)
+                self._notify_room = room_id
                 self.tray.showMessage(
                     f"{sender_name} · {room_name}",
                     body,
@@ -1002,6 +1013,25 @@ class MainWindow(QWidget):
             self.raise_()
             self.activateWindow()
 
+    def _on_notify_clicked(self):
+        # 点击系统通知 → 切换到对应房间
+        if self._notify_room:
+            self._switch_to_room(self._notify_room)
+
+    def _switch_to_room(self, room_id):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        if room_id != self.current_room_id:
+            self.current_room_id = room_id
+            asyncio.create_task(self._load_room(room_id))
+        for lst in (self.group_list, self.dm_list):
+            for i in range(lst.count()):
+                item = lst.item(i)
+                if item.data(Qt.ItemDataRole.UserRole) == room_id:
+                    lst.setCurrentItem(item)
+                    break
+
     def _on_key_received(self, room_id):
         # 密钥到达，刷新当前房间（防抖，避免批量密钥频繁重载）
         if room_id != self.current_room_id:
@@ -1151,6 +1181,22 @@ class MainWindow(QWidget):
             lst.addItem(f"{name}{suffix}\n  {uid}")
         lay.addWidget(lst)
         dlg.exec()
+
+    def _search_message(self):
+        if not self.current_room_id:
+            return
+        keyword, ok = QInputDialog.getText(self, "搜索消息", "输入关键词：")
+        if not ok or not keyword.strip():
+            return
+        keyword = keyword.strip().lower()
+        for i in range(self.msg_list.count()):
+            item = self.msg_list.item(i)
+            body = item.data(Qt.ItemDataRole.UserRole)
+            if body and keyword in body.lower():
+                self.msg_list.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+                self.msg_list.setCurrentItem(item)
+                return
+        QMessageBox.information(self, "搜索", "未找到匹配的消息")
 
     def _invite(self):
         if not self.current_room_id:
