@@ -44,7 +44,7 @@ _LOCAL_STORE_PASSPHRASE = "mchat-local-store-passphrase"
 PLACEHOLDER = "🔒 无法解密的消息（缺少密钥）"
 
 # (room_id, event_id, sender_name, sender_id, body, timestamp_ms, image_url)
-MessageCallback = Callable[[str, str, str, str, str, int, "str | None"], None]
+MessageCallback = Callable[[str, str, str, str, str, int, "dict | None"], None]
 RoomCallback = Callable[[], None]
 StatusCallback = Callable[[str], None]
 KeyCallback = Callable[[str], None]  # (room_id)
@@ -155,7 +155,7 @@ class MatrixService:
                 event.sender,
                 f"🖼️ {event.body}",
                 event.server_timestamp,
-                getattr(event, "url", None),
+                {"url": getattr(event, "url", None)},
             )
         elif isinstance(event, RoomEncryptedImage):
             sender_name = room.user_name(event.sender) or event.sender
@@ -166,7 +166,7 @@ class MatrixService:
                 event.sender,
                 f"🖼️ {event.body}",
                 event.server_timestamp,
-                None,
+                self._encrypted_media_info(event),
             )
         elif isinstance(event, MegolmEvent):
             # 解密失败（密钥缺失）的消息，用占位显示，避免消息凭空消失
@@ -179,7 +179,7 @@ class MatrixService:
                 event.server_timestamp,
             )
 
-    def _emit(self, room_id, event_id, sender_name, sender_id, body, ts, image_url=None) -> None:
+    def _emit(self, room_id, event_id, sender_name, sender_id, body, ts, image_url=None) -> None:  # image_url: dict(media info)
         if self.on_message:
             self.on_message(room_id, event_id, sender_name, sender_id, body, ts, image_url)
 
@@ -286,17 +286,42 @@ class MatrixService:
             raise RuntimeError(f"发送失败（HTTP {resp.status_code}）：{resp.message}")
         return resp.event_id
 
-    async def download_media(self, mxc_url: str):
-        """下载媒体（图片等），返回 bytes；失败返回 None。"""
-        if not self.client:
+    async def download_media(self, media_info):
+        """下载媒体，返回 bytes；失败返回 None。media_info 为 {"url", "key", "hash", "iv"}。"""
+        if not media_info or not self.client:
+            return None
+        mxc = media_info.get("url")
+        if not mxc:
             return None
         try:
-            resp = await self.client.download(mxc_url)
+            resp = await self.client.download(mxc)
         except Exception:  # noqa: BLE001
             return None
         if isinstance(resp, DownloadError):
             return None
-        return getattr(resp, "body", None)
+        data = getattr(resp, "body", None)
+        if data and media_info.get("key"):
+            # 加密媒体：解密
+            from nio.crypto.attachments import decrypt_attachment
+            try:
+                data = decrypt_attachment(
+                    data, media_info["key"], media_info["hash"], media_info["iv"]
+                )
+            except Exception:  # noqa: BLE001
+                return None
+        return data
+
+    @staticmethod
+    def _encrypted_media_info(event) -> dict:
+        """从加密媒体事件提取解密信息。"""
+        key = getattr(event, "key", None)
+        hashes = getattr(event, "hashes", None) or {}
+        return {
+            "url": getattr(event, "url", None),
+            "key": (key or {}).get("k") if isinstance(key, dict) else None,
+            "hash": hashes.get("sha256"),
+            "iv": getattr(event, "iv", None),
+        }
 
     @staticmethod
     def _guess_mime(suffix: str) -> str:
@@ -374,7 +399,7 @@ class MatrixService:
                         "body": f"🖼️ {ev.body}",
                         "ts": ev.server_timestamp,
                         "decrypted": True,
-                        "image_url": getattr(ev, "url", None),
+                        "image_url": {"url": getattr(ev, "url", None)},
                     }
                 )
             elif isinstance(ev, RoomEncryptedImage):
@@ -385,7 +410,7 @@ class MatrixService:
                         "body": f"🖼️ {ev.body}",
                         "ts": ev.server_timestamp,
                         "decrypted": True,
-                        "image_url": None,
+                        "image_url": self._encrypted_media_info(ev),
                     }
                 )
         return list(reversed(out))  # 旧 → 新
