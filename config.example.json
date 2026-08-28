@@ -1,24 +1,9 @@
 {
   "homeserver": "https://matrix.org",
   "proxy": "",
-  "room_id": "",
-  "room_name": "MChat 通道",
-  "accounts": {
-    "a": {
-      "label": "程序A",
-      "user_id": "@你的用户名A:matrix.org",
-      "password": "账号A的密码",
-      "access_token": "",
-      "device_id": "MChat-A",
-      "store_dir": "store_a"
-    },
-    "b": {
-      "label": "程序B",
-      "user_id": "@你的用户名B:matrix.org",
-      "password": "账号B的密码",
-      "access_token": "",
-      "device_id": "MChat-B",
-      "store_dir": "store_b"
-    }
-  }
+  "user_id": "@你的用户名:matrix.org",
+  "password": "你的密码",
+  "access_token": "",
+  "device_id": "MChat",
+  "store_dir": "store"
 }
