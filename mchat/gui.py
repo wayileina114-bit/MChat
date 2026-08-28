@@ -126,9 +126,16 @@ def name_color(name: str) -> str:
 def fmt_time(ts_ms: int) -> str:
     try:
         dt = datetime.fromtimestamp(ts_ms / 1000)
-        today = datetime.now().date()
-        if dt.date() == today:
+        now = datetime.now()
+        delta = now - dt
+        if delta < timedelta(minutes=1):
+            return "刚刚"
+        if delta < timedelta(hours=1):
+            return f"{int(delta.total_seconds() // 60)} 分钟前"
+        if dt.date() == now.date():
             return dt.strftime("%H:%M")
+        if dt.date() == (now - timedelta(days=1)).date():
+            return "昨天 " + dt.strftime("%H:%M")
         return dt.strftime("%m-%d %H:%M")
     except Exception:  # noqa: BLE001
         return ""
@@ -658,6 +665,10 @@ class MainWindow(QWidget):
                     QSystemTrayIcon.MessageIcon.Information,
                     5000,
                 )
+                try:
+                    QApplication.beep()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _append_message(self, event_id, sender_id, body, ts_ms, decrypted=True, image_url=None):
         if event_id and event_id in self._seen_events:
