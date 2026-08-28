@@ -12,6 +12,7 @@ import threading
 from datetime import datetime, timedelta
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -137,8 +138,9 @@ def fmt_time(ts_ms: int) -> str:
 # 消息条目
 # --------------------------------------------------------------------------
 class MessageWidget(QWidget):
-    def __init__(self, sender_name: str, sender_id: str, body: str, ts_ms: int, parent=None, is_placeholder: bool = False):
+    def __init__(self, sender_name: str, sender_id: str, body: str, ts_ms: int, parent=None, is_placeholder: bool = False, image_url: str | None = None):
         super().__init__(parent)
+        self.image_label = None
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 6, 12, 6)
         lay.setSpacing(10)
@@ -170,22 +172,44 @@ class MessageWidget(QWidget):
         head.addStretch(1)
         col.addLayout(head)
 
-        body_lbl = QLabel()
-        body_lbl.setWordWrap(True)
-        body_lbl.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.LinksAccessibleByMouse
-        )
-        body_lbl.setOpenExternalLinks(True)
-        if is_placeholder:
-            body_lbl.setText(body)
-            body_lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-style: italic; font-size: 14px;")
+        if image_url:
+            self.image_label = QLabel("🖼️ 图片加载中……")
+            self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.image_label.setMinimumSize(160, 100)
+            self.image_label.setStyleSheet(
+                f"background: {C_INPUT}; border-radius: 8px; color: {C_TEXT_MUTED};"
+            )
+            col.addWidget(self.image_label)
         else:
-            body_lbl.setText(linkify(body))
-            body_lbl.setTextFormat(Qt.TextFormat.RichText)
-            body_lbl.setStyleSheet(f"color: {C_TEXT}; font-size: 14px;")
-        col.addWidget(body_lbl)
+            body_lbl = QLabel()
+            body_lbl.setWordWrap(True)
+            body_lbl.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.LinksAccessibleByMouse
+            )
+            body_lbl.setOpenExternalLinks(True)
+            if is_placeholder:
+                body_lbl.setText(body)
+                body_lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-style: italic; font-size: 14px;")
+            else:
+                body_lbl.setText(linkify(body))
+                body_lbl.setTextFormat(Qt.TextFormat.RichText)
+                body_lbl.setStyleSheet(f"color: {C_TEXT}; font-size: 14px;")
+            col.addWidget(body_lbl)
 
         lay.addLayout(col, 1)
+
+    def set_image(self, data: bytes):
+        label = getattr(self, "image_label", None)
+        if not label or not data:
+            return
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(data):
+            label.setText("🖼️ 图片无法显示")
+            return
+        scaled = pixmap.scaledToWidth(260, Qt.TransformationMode.SmoothTransformation)
+        label.setPixmap(scaled)
+        label.setFixedSize(scaled.size())
+        label.setStyleSheet("")
 
 
 # --------------------------------------------------------------------------
@@ -513,16 +537,16 @@ class MainWindow(QWidget):
             msgs = await self.service.history(room_id, limit=100)
             for m in msgs:
                 self._append_message(
-                    m["event_id"], m["sender"], m["body"], m["ts"], m["decrypted"]
+                    m["event_id"], m["sender"], m["body"], m["ts"], m["decrypted"], m.get("image_url")
                 )
         except Exception:  # noqa: BLE001
             pass
         self.msg_list.scrollToBottom()
 
     # ---------------- 消息 ----------------
-    def _on_message(self, room_id, event_id, sender_name, sender_id, body, ts_ms):
+    def _on_message(self, room_id, event_id, sender_name, sender_id, body, ts_ms, image_url=None):
         if room_id == self.current_room_id:
-            self._append_message(event_id, sender_id, body, ts_ms, True)
+            self._append_message(event_id, sender_id, body, ts_ms, True, image_url)
         else:
             # 非当前房间的新消息：系统托盘通知（过滤自己发 + 历史同步）
             if (
@@ -539,7 +563,7 @@ class MainWindow(QWidget):
                     5000,
                 )
 
-    def _append_message(self, event_id, sender_id, body, ts_ms, decrypted=True):
+    def _append_message(self, event_id, sender_id, body, ts_ms, decrypted=True, image_url=None):
         if event_id and event_id in self._seen_events:
             return
         if event_id:
@@ -552,12 +576,18 @@ class MainWindow(QWidget):
         item = QListWidgetItem()
         item.setSizeHint(QSize(0, 60))
         self.msg_list.addItem(item)
-        self.msg_list.setItemWidget(
-            item, MessageWidget(name, sender_id, body, ts_ms, is_placeholder=not decrypted)
-        )
+        widget = MessageWidget(name, sender_id, body, ts_ms, is_placeholder=not decrypted, image_url=image_url)
+        self.msg_list.setItemWidget(item, widget)
+        if image_url:
+            asyncio.create_task(self._load_image(widget, image_url))
         while self.msg_list.count() > 500:
             self.msg_list.takeItem(0)
         self.msg_list.scrollToBottom()
+
+    async def _load_image(self, widget, image_url):
+        data = await self.service.download_media(image_url)
+        if data:
+            widget.set_image(data)
 
     @staticmethod
     def _date_key(ts_ms: int) -> str:
