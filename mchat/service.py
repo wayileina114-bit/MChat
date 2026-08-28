@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Callable, Optional
 
 from nio import (
@@ -54,6 +55,7 @@ class MatrixService:
         self.on_status: Optional[StatusCallback] = None
         self.on_key_received: Optional[KeyCallback] = None
         self.unread: dict[str, int] = {}
+        self._session_start_ms: int = 0
 
     # ---------------- 客户端与登录 ----------------
     def make_client(self) -> AsyncClient:
@@ -62,7 +64,7 @@ class MatrixService:
             encryption_enabled=True,
             store=SqliteStore,
             store_name="nio.db",
-            store_sync_tokens=True,
+            store_sync_tokens=False,  # 必须 False：nio 不持久化房间列表，False 保证每次启动全量同步加载房间
             pickle_key=_LOCAL_STORE_PASSPHRASE,
         )
         store_path = ROOT / cfg["store_dir"]
@@ -101,6 +103,7 @@ class MatrixService:
         client.add_to_device_callback(self._handle_key, (RoomKeyEvent, ForwardedRoomKeyEvent))
 
         # 首次同步，加载房间与成员状态
+        self._session_start_ms = int(time.time() * 1000)
         await client.sync(timeout=3000)
         self._task = asyncio.create_task(self._sync_loop(client))
         self._report("开始监听")
@@ -119,8 +122,12 @@ class MatrixService:
 
     def _handle_event(self, room, event) -> None:
         if isinstance(event, RoomMessageText):
-            # 未读计数：别人发的消息 +1（自己发的不计）
-            if event.sender and event.sender != self.client.user_id:
+            # 未读计数：只统计本会话新收到的、别人发的消息（排除全量同步的历史消息）
+            if (
+                event.sender
+                and event.sender != self.client.user_id
+                and event.server_timestamp >= self._session_start_ms
+            ):
                 self.unread[room.room_id] = self.unread.get(room.room_id, 0) + 1
             self._emit(
                 room.room_id,
@@ -199,6 +206,9 @@ class MatrixService:
         """发送文本消息，返回 event_id。"""
         if not self.client:
             raise RuntimeError("尚未连接")
+        # 房间尚未同步到本地时先同步一次，避免 "No such room"
+        if room_id not in self.client.rooms:
+            await self.client.sync(timeout=3000)
         resp = await self.client.room_send(
             room_id=room_id,
             message_type="m.room.message",
@@ -315,6 +325,19 @@ class MatrixService:
     async def leave_room(self, room_id: str) -> None:
         await self.client.room_leave(room_id)
         self._notify_room_update()
+
+    async def logout(self) -> None:
+        """登出：撤销服务器 token，清除本地凭证。"""
+        cfg = load_config()
+        if self.client and cfg.get("access_token"):
+            try:
+                await self.client.logout()
+            except Exception:  # noqa: BLE001
+                pass
+        cfg["access_token"] = ""
+        cfg["password"] = ""
+        save_config(cfg)
+        await self.close()
 
     # ---------------- 工具 ----------------
     def _report(self, text: str) -> None:
