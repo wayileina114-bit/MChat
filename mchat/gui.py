@@ -387,6 +387,7 @@ class MainWindow(QWidget):
         super().__init__()
         self.service = service
         self.current_room_id = ""
+        self._reply_to = None
         self._seen_events: set = set()
         self._last_msg_date: str | None = None
         self._messages: list = []
@@ -553,9 +554,17 @@ class MainWindow(QWidget):
 
         input_bar = QFrame()
         input_bar.setObjectName("inputBar")
-        input_lay = QHBoxLayout(input_bar)
-        input_lay.setContentsMargins(16, 12, 16, 12)
+        input_bar_lay = QVBoxLayout(input_bar)
+        input_bar_lay.setContentsMargins(0, 0, 0, 0)
+        input_bar_lay.setSpacing(0)
+        self._reply_label = QLabel("")
+        self._reply_label.setStyleSheet(f"color: {C_ACCENT}; font-size: 12px; padding: 4px 16px 0 16px; background: {C_BG};")
+        self._reply_label.hide()
+        input_bar_lay.addWidget(self._reply_label)
+        input_lay = QHBoxLayout()
+        input_lay.setContentsMargins(16, 4, 16, 12)
         input_lay.setSpacing(10)
+        input_bar_lay.addLayout(input_lay)
         self.image_btn = QPushButton("🖼️")
         self.image_btn.setToolTip("发送图片")
         self.image_btn.setStyleSheet(self._btn_style())
@@ -891,6 +900,7 @@ class MainWindow(QWidget):
         sender_id = item.data(Qt.ItemDataRole.UserRole + 2)
         menu = QMenu(self)
         act_copy = menu.addAction("复制消息")
+        act_reply = menu.addAction("回复")
         is_own = bool(sender_id and self.service.client and sender_id == self.service.client.user_id)
         is_text = not body.startswith("🖼️") and body != "🔒 无法解密的消息（缺少密钥）"
         act_edit = None
@@ -903,10 +913,24 @@ class MainWindow(QWidget):
         chosen = menu.exec(self.msg_list.viewport().mapToGlobal(pos))
         if chosen == act_copy:
             QApplication.clipboard().setText(body)
+        elif chosen == act_reply:
+            self._set_reply(event_id, sender_id, body)
         elif act_edit and chosen == act_edit:
             self._edit_message(event_id, body)
         elif act_redact and chosen == act_redact:
             asyncio.create_task(self._do_redact(event_id))
+
+    def _set_reply(self, event_id, sender_id, body):
+        name = self._display_name(sender_id)
+        preview = body.replace("\n", " ")[:50]
+        self._reply_to = (event_id, name, preview)
+        self._reply_label.setText(f"↩ 回复 {name}：{preview}")
+        self._reply_label.show()
+        self.input.setFocus()
+
+    def _cancel_reply(self):
+        self._reply_to = None
+        self._reply_label.hide()
 
     def _edit_message(self, event_id, old_text):
         text, ok = QInputDialog.getText(self, "编辑消息", "新内容：", text=old_text)
@@ -1084,7 +1108,9 @@ class MainWindow(QWidget):
 
     async def _do_send(self, text):
         try:
-            event_id = await self.service.send_text(self.current_room_id, text)
+            reply_to = self._reply_to[0] if self._reply_to else None
+            event_id = await self.service.send_text(self.current_room_id, text, reply_to=reply_to)
+            self._cancel_reply()
             # 乐观回显：立即显示自己发的消息（sync 回调因 event_id 去重而跳过）
             widget = self._append_message(
                 event_id,
