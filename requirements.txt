@@ -1,0 +1,4 @@
+matrix-nio[e2e]==0.26.0
+PySide6>=6.11
+qasync>=0.27
+vodozemac>=0.10
