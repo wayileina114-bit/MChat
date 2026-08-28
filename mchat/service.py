@@ -66,6 +66,7 @@ class MatrixService:
         self.on_key_received: Optional[KeyCallback] = None
         self.on_receipt: Optional[Callable[[str, str], None]] = None  # (event_id, user_id)
         self.on_typing: Optional[Callable[[str, list], None]] = None  # (room_id, user_ids)
+        self.on_mention: Optional[Callable[[str, str, str], None]] = None  # (room_id, sender_name, body)
         self.unread: dict[str, int] = {}
         self._session_start_ms: int = 0
         self.last_messages: dict[str, tuple[str, str]] = {}  # room_id -> (sender_name, body)
@@ -156,6 +157,12 @@ class MatrixService:
             except Exception:  # noqa: BLE001
                 pass
             self.last_messages[room.room_id] = (sender_name, body)
+            # @ 提及检测
+            if self.on_mention and self.client and event.sender != self.client.user_id:
+                my_id = self.client.user_id or ""
+                my_local = my_id.split(":")[0].lstrip("@") if my_id else ""
+                if my_id and (my_id in body or (my_local and f"@{my_local}" in body)):
+                    self.on_mention(room.room_id, sender_name, event.body)
             self._emit(
                 room.room_id,
                 event.event_id,
