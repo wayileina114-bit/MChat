@@ -6,8 +6,10 @@ GUI 通过回调（on_message / on_room_update / on_status）接收事件。
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import time
+from pathlib import Path
 from typing import Callable, Optional
 
 from nio import (
@@ -20,6 +22,8 @@ from nio import (
     ForwardedRoomKeyEvent,
     RoomKeyEvent,
     RoomCreateError,
+    RoomMessageImage,
+    UploadError,
     RoomInviteError,
     RoomMessageText,
     RoomMessagesError,
@@ -140,6 +144,16 @@ class MatrixService:
                 event.body,
                 event.server_timestamp,
             )
+        elif isinstance(event, RoomMessageImage):
+            sender_name = room.user_name(event.sender) or event.sender
+            self._emit(
+                room.room_id,
+                event.event_id,
+                sender_name,
+                event.sender,
+                f"🖼️ {event.body}",
+                event.server_timestamp,
+            )
         elif isinstance(event, MegolmEvent):
             # 解密失败（密钥缺失）的消息，用占位显示，避免消息凭空消失
             self._emit(
@@ -222,6 +236,46 @@ class MatrixService:
         if isinstance(resp, RoomSendError):
             raise RuntimeError(f"发送失败（HTTP {resp.status_code}）：{resp.message}")
         return resp.event_id
+
+    async def send_image(self, room_id: str, file_path: str) -> str:
+        """发送图片，返回 event_id。"""
+        if not self.client:
+            raise RuntimeError("尚未连接")
+        path = Path(file_path)
+        if not path.exists():
+            raise RuntimeError(f"文件不存在：{file_path}")
+        mimetype = self._guess_mime(path.suffix)
+        data = path.read_bytes()
+        room = self.client.rooms.get(room_id)
+        encrypt = bool(room and getattr(room, "encrypted", False))
+        up_resp, _ = await self.client.upload(
+            io.BytesIO(data), content_type=mimetype, filename=path.name, encrypt=encrypt
+        )
+        if isinstance(up_resp, UploadError):
+            raise RuntimeError(f"图片上传失败：{up_resp.message}")
+        content = {
+            "msgtype": "m.image",
+            "body": path.name,
+            "url": up_resp.content_uri,
+            "info": {"mimetype": mimetype, "size": len(data)},
+        }
+        resp = await self.client.room_send(
+            room_id, "m.room.message", content, ignore_unverified_devices=True
+        )
+        if isinstance(resp, RoomSendError):
+            raise RuntimeError(f"发送失败（HTTP {resp.status_code}）：{resp.message}")
+        return resp.event_id
+
+    @staticmethod
+    def _guess_mime(suffix: str) -> str:
+        return {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp",
+        }.get(suffix.lower(), "image/png")
 
     async def history(self, room_id: str, limit: int = 100):
         """返回房间历史（旧→新），解密失败的消息用占位文本代替，不丢弃。"""
