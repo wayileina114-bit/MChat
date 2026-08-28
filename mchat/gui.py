@@ -147,7 +147,7 @@ class ClickableLabel(QLabel):
 
 
 class MessageWidget(QWidget):
-    def __init__(self, sender_name: str, sender_id: str, body: str, ts_ms: int, parent=None, is_placeholder: bool = False, image_url: str | None = None):
+    def __init__(self, sender_name: str, sender_id: str, body: str, ts_ms: int, parent=None, is_placeholder: bool = False, image_url: str | None = None, is_own: bool = False):
         super().__init__(parent)
         self.image_label = None
         self._image_data = None
@@ -178,6 +178,11 @@ class MessageWidget(QWidget):
         except Exception:  # noqa: BLE001
             pass
         head.addWidget(name_lbl)
+        self.status_label = None
+        if is_own:
+            self.status_label = QLabel("已发送")
+            self.status_label.setStyleSheet(f"color: {C_TEXT_MUTED}; font-size: 11px;")
+            head.addWidget(self.status_label)
         head.addWidget(time_lbl)
         head.addStretch(1)
         col.addLayout(head)
@@ -208,6 +213,10 @@ class MessageWidget(QWidget):
             col.addWidget(body_lbl)
 
         lay.addLayout(col, 1)
+
+    def set_status(self, text: str):
+        if self.status_label:
+            self.status_label.setText(text)
 
     def set_image(self, data: bytes):
         label = getattr(self, "image_label", None)
@@ -358,6 +367,7 @@ class MainWindow(QWidget):
         self._seen_events: set = set()
         self._last_msg_date: str | None = None
         self._messages: list = []
+        self._pending_widgets: dict = {}
         self._history_end_token: "str | None" = None
         self._loading_older = False
         self._started = False
@@ -626,6 +636,10 @@ class MainWindow(QWidget):
     # ---------------- 消息 ----------------
     def _on_message(self, room_id, event_id, sender_name, sender_id, body, ts_ms, image_url=None):
         if room_id == self.current_room_id:
+            # 自己发送的消息经 sync 确认后，把「发送中」更新为「已发送」
+            if event_id in self._pending_widgets:
+                w = self._pending_widgets.pop(event_id)
+                w.set_status("已发送")
             self._append_message(event_id, sender_id, body, ts_ms, True, image_url)
         else:
             # 非当前房间的新消息：系统托盘通知（过滤自己发 + 历史同步）
@@ -659,7 +673,8 @@ class MainWindow(QWidget):
         item.setData(Qt.ItemDataRole.UserRole + 1, event_id)
         item.setData(Qt.ItemDataRole.UserRole + 2, sender_id)
         self.msg_list.addItem(item)
-        widget = MessageWidget(name, sender_id, body, ts_ms, is_placeholder=not decrypted, image_url=image_url)
+        is_own = bool(self.service.client and sender_id == self.service.client.user_id)
+        widget = MessageWidget(name, sender_id, body, ts_ms, is_placeholder=not decrypted, image_url=image_url, is_own=is_own)
         self.msg_list.setItemWidget(item, widget)
         if image_url:
             asyncio.create_task(self._load_image(widget, image_url))
@@ -674,6 +689,7 @@ class MainWindow(QWidget):
             if self._messages:
                 self._messages.pop(0)
         self.msg_list.scrollToBottom()
+        return widget
 
     async def _load_image(self, widget, image_url):
         data = await self.service.download_media(image_url)
@@ -878,13 +894,16 @@ class MainWindow(QWidget):
         try:
             event_id = await self.service.send_text(self.current_room_id, text)
             # 乐观回显：立即显示自己发的消息（sync 回调因 event_id 去重而跳过）
-            self._append_message(
+            widget = self._append_message(
                 event_id,
                 self.service.client.user_id if self.service.client else "",
                 text,
                 int(datetime.now().timestamp() * 1000),
                 True,
             )
+            if widget:
+                widget.set_status("发送中")
+                self._pending_widgets[event_id] = widget
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "发送失败", str(exc))
 
