@@ -263,6 +263,7 @@ class MainWindow(QWidget):
         service.on_message = self._on_message
         service.on_room_update = self._refresh_rooms
         service.on_status = self._on_status
+        service.on_key_received = self._on_key_received
 
         self._build_ui()
 
@@ -487,6 +488,20 @@ class MainWindow(QWidget):
 
     def _on_status(self, text):
         self.user_sub.setText(f"已连接 · {text}")
+
+    def _on_key_received(self, room_id):
+        # 密钥到达，刷新当前房间（防抖，避免批量密钥频繁重载）
+        if room_id != self.current_room_id:
+            return
+        if getattr(self, "_key_refresh_pending", False):
+            return
+        self._key_refresh_pending = True
+
+        def do_refresh():
+            self._key_refresh_pending = False
+            asyncio.create_task(self._load_room(room_id))
+
+        QTimer.singleShot(2000, do_refresh)
 
     # ---------------- 交互 ----------------
     def _send(self):
