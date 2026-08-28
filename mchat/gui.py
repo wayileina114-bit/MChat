@@ -178,10 +178,11 @@ class MessageWidget(QWidget):
         head.setSpacing(8)
         name_lbl = QLabel(sender_name or sender_id)
         name_lbl.setStyleSheet(f"color: {name_color(sender_id)}; font-weight: bold; font-size: 14px;")
-        time_lbl = QLabel(fmt_time(ts_ms))
-        time_lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-size: 11px;")
+        self._ts_ms = ts_ms
+        self.time_lbl = QLabel(fmt_time(ts_ms))
+        self.time_lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-size: 11px;")
         try:
-            time_lbl.setToolTip(datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M:%S"))
+            self.time_lbl.setToolTip(datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d %H:%M:%S"))
         except Exception:  # noqa: BLE001
             pass
         head.addWidget(name_lbl)
@@ -224,6 +225,10 @@ class MessageWidget(QWidget):
     def set_status(self, text: str):
         if self.status_label:
             self.status_label.setText(text)
+
+    def update_time(self):
+        if getattr(self, "time_lbl", None):
+            self.time_lbl.setText(fmt_time(self._ts_ms))
 
     def set_image(self, data: bytes):
         label = getattr(self, "image_label", None)
@@ -416,6 +421,11 @@ class MainWindow(QWidget):
         self._room_timer = QTimer(self)
         self._room_timer.timeout.connect(self._refresh_rooms)
         self._room_timer.start(5000)
+
+        # 定期刷新消息相对时间（刚刚 / x分钟前）
+        self._time_timer = QTimer(self)
+        self._time_timer.timeout.connect(self._refresh_message_times)
+        self._time_timer.start(60000)
 
         QTimer.singleShot(0, lambda: asyncio.create_task(self._startup()))
 
@@ -632,8 +642,16 @@ class MainWindow(QWidget):
             peer = r.get("peer_id")
             if peer:
                 asyncio.create_task(self._set_room_avatar(item, peer))
+            else:
+                asyncio.create_task(self._set_group_avatar(item, r["room_id"]))
             target = self.dm_list if r["is_dm"] else self.group_list
             target.addItem(item)
+
+    def _refresh_message_times(self):
+        for i in range(self.msg_list.count()):
+            widget = self.msg_list.itemWidget(self.msg_list.item(i))
+            if widget and hasattr(widget, "update_time"):
+                widget.update_time()
 
     def _on_room_clicked(self, item):
         room_id = item.data(Qt.ItemDataRole.UserRole)
@@ -946,6 +964,30 @@ class MainWindow(QWidget):
             if pixmap.loadFromData(data):
                 scaled = pixmap.scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
                 item.setIcon(QIcon(scaled))
+
+    async def _set_group_avatar(self, item, room_id):
+        # 群聊：取前 2 个成员头像合成堆叠图标
+        if not self.service.client:
+            return
+        room = self.service.client.rooms.get(room_id)
+        if not room:
+            return
+        users = list(room.users.keys())[:2]
+        pixmaps = []
+        for uid in users:
+            data = await self.service.get_avatar_data(uid)
+            if data:
+                pm = QPixmap()
+                if pm.loadFromData(data):
+                    pixmaps.append(pm.scaled(20, 20, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
+        if pixmaps:
+            combined = QPixmap(34, 20)
+            combined.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(combined)
+            for i, pm in enumerate(pixmaps[:2]):
+                painter.drawPixmap(i * 14, 0, pm)
+            painter.end()
+            item.setIcon(QIcon(combined))
 
     def _room_name(self, room_id: str) -> str:
         for r in self.service.rooms():
