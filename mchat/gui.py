@@ -123,7 +123,7 @@ def fmt_time(ts_ms: int) -> str:
 # 消息条目
 # --------------------------------------------------------------------------
 class MessageWidget(QWidget):
-    def __init__(self, sender_name: str, sender_id: str, body: str, ts_ms: int, parent=None):
+    def __init__(self, sender_name: str, sender_id: str, body: str, ts_ms: int, parent=None, is_placeholder: bool = False):
         super().__init__(parent)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 6, 12, 6)
@@ -155,7 +155,10 @@ class MessageWidget(QWidget):
         body_lbl = QLabel(body)
         body_lbl.setWordWrap(True)
         body_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        body_lbl.setStyleSheet(f"color: {C_TEXT}; font-size: 14px;")
+        if is_placeholder:
+            body_lbl.setStyleSheet(f"color: {C_TEXT_MUTED}; font-style: italic; font-size: 14px;")
+        else:
+            body_lbl.setStyleSheet(f"color: {C_TEXT}; font-size: 14px;")
         col.addWidget(body_lbl)
 
         lay.addLayout(col, 1)
@@ -251,6 +254,7 @@ class MainWindow(QWidget):
         super().__init__()
         self.service = service
         self.current_room_id = ""
+        self._seen_events: set = set()
         self._started = False
 
         self.setWindowTitle(f"{__app_name__} v{__version__}")
@@ -432,6 +436,7 @@ class MainWindow(QWidget):
 
     async def _load_room(self, room_id):
         self.msg_list.clear()
+        self._seen_events.clear()
         # 更新标题
         for r in self.service.rooms():
             if r["room_id"] == room_id:
@@ -442,28 +447,32 @@ class MainWindow(QWidget):
         self.send_btn.setEnabled(True)
         self.invite_btn.setEnabled(True)
         try:
-            msgs = await self.service.history(room_id, limit=50)
-            for ev in reversed(msgs):
+            msgs = await self.service.history(room_id, limit=100)
+            for m in msgs:
                 self._append_message(
-                    ev.sender,
-                    getattr(ev, "body", ""),
-                    getattr(ev, "server_timestamp", 0),
+                    m["event_id"], m["sender"], m["body"], m["ts"], m["decrypted"]
                 )
         except Exception:  # noqa: BLE001
             pass
         self.msg_list.scrollToBottom()
 
     # ---------------- 消息 ----------------
-    def _on_message(self, room_id, sender_name, sender_id, body, ts_ms):
+    def _on_message(self, room_id, event_id, sender_name, sender_id, body, ts_ms):
         if room_id == self.current_room_id:
-            self._append_message(sender_id, body, ts_ms)
+            self._append_message(event_id, sender_id, body, ts_ms, True)
 
-    def _append_message(self, sender_id, body, ts_ms):
+    def _append_message(self, event_id, sender_id, body, ts_ms, decrypted=True):
+        if event_id and event_id in self._seen_events:
+            return
+        if event_id:
+            self._seen_events.add(event_id)
         name = self._display_name(sender_id)
         item = QListWidgetItem()
         item.setSizeHint(QSize(0, 60))
         self.msg_list.addItem(item)
-        self.msg_list.setItemWidget(item, MessageWidget(name, sender_id, body, ts_ms))
+        self.msg_list.setItemWidget(
+            item, MessageWidget(name, sender_id, body, ts_ms, is_placeholder=not decrypted)
+        )
         while self.msg_list.count() > 500:
             self.msg_list.takeItem(0)
         self.msg_list.scrollToBottom()
@@ -491,7 +500,15 @@ class MainWindow(QWidget):
 
     async def _do_send(self, text):
         try:
-            await self.service.send_text(self.current_room_id, text)
+            event_id = await self.service.send_text(self.current_room_id, text)
+            # 乐观回显：立即显示自己发的消息（sync 回调因 event_id 去重而跳过）
+            self._append_message(
+                event_id,
+                self.service.client.user_id if self.service.client else "",
+                text,
+                int(datetime.now().timestamp() * 1000),
+                True,
+            )
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "发送失败", str(exc))
 
